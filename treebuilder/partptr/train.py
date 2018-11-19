@@ -10,6 +10,7 @@ from itertools import chain
 from structure.vocab import Vocab, Label
 from structure.nodes import node_type_filter, EDU, Relation, Sentence
 from treebuilder.partptr.model import PartitionPtr
+import torch.optim as optim
 
 
 def build_vocab(dataset):
@@ -108,7 +109,7 @@ def gen_batch_iter(instances, batch_size, use_gpu=False):
         d_inputs = np.zeros([num_batch, max_edu_seqlen-1, 2], dtype=np.long)
         d_outputs = np.zeros([num_batch, max_edu_seqlen-1], dtype=np.long)
         d_output_nucs = np.zeros([num_batch, max_edu_seqlen-1], dtype=np.long)
-        d_masks = np.zeros([num_batch, max_edu_seqlen-1], dtype=np.uint8)
+        d_masks = np.zeros([num_batch, max_edu_seqlen-1, max_edu_seqlen+1], dtype=np.uint8)
 
         for batchi, (encoder_inputs, decoder_inputs, pred_splits, pred_nucs) in enumerate(batch):
             for edui, (edu_word_ids, edu_pos_ids) in enumerate(encoder_inputs):
@@ -119,18 +120,18 @@ def gen_batch_iter(instances, batch_size, use_gpu=False):
 
             for di, decoder_input in enumerate(decoder_inputs):
                 d_inputs[batchi][di] = decoder_input
+                d_masks[batchi][di][decoder_input[0]+1: decoder_input[1]] = 1
             d_outputs[batchi][:len(pred_splits)] = pred_splits
             d_output_nucs[batchi][:len(pred_nucs)] = pred_nucs
-            d_masks[batchi][:len(pred_splits)] = 1
 
         # numpy to torch
-        e_input_words = torch.from_numpy(e_input_words)
-        e_input_poses = torch.from_numpy(e_input_poses)
-        e_masks = torch.from_numpy(e_masks)
-        d_inputs = torch.from_numpy(d_inputs)
-        d_outputs = torch.from_numpy(d_outputs)
-        d_output_nucs = torch.from_numpy(d_output_nucs)
-        d_masks = torch.from_numpy(d_masks)
+        e_input_words = torch.from_numpy(e_input_words).long()
+        e_input_poses = torch.from_numpy(e_input_poses).long()
+        e_masks = torch.from_numpy(e_masks).byte()
+        d_inputs = torch.from_numpy(d_inputs).long()
+        d_outputs = torch.from_numpy(d_outputs).long()
+        d_output_nucs = torch.from_numpy(d_output_nucs).long()
+        d_masks = torch.from_numpy(d_masks).byte()
 
         if use_gpu:
             e_input_words = e_input_words.cuda()
@@ -166,27 +167,51 @@ def main(args):
     if args.use_gpu:
         model.cuda()
     logging.info("model:\n%s" % str(model))
-    # train
-    batch_iter = gen_batch_iter(trainset, args.batch_size, args.use_gpu)
-    e_inputs, d_inputs, preds = next(batch_iter)
-    model.loss(e_inputs, d_inputs, preds)
+
+    # train and evaluate
+    iiter = 0
+    log_loss = 0.
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    for iepoch in range(1, args.epoch + 1):
+        batch_iter = gen_batch_iter(trainset, args.batch_size, args.use_gpu)
+        for ibatch, (e_inputs, d_inputs, grounds) in enumerate(batch_iter, start=1):
+            iiter += 1
+            model.train()
+            optimizer.zero_grad()
+            loss = model.loss(e_inputs, d_inputs, grounds)
+            loss.backward()
+            optimizer.step()
+            log_loss += loss.item()
+            if iiter % args.log_every == 0:
+                logging.info("[iter %-6d]epoch: %-3d, batch %-5d, train loss: %.5f" % (iiter, iepoch, ibatch, log_loss))
+                log_loss = 0.
 
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     arg_parser = argparse.ArgumentParser()
+
+    # dataset parameters
     arg_parser.add_argument("data")
     arg_parser.add_argument("--ctb_dir")
+    arg_parser.add_argument("--cache_dir")
+
+    # model parameters
     arg_parser.add_argument("-hidden_size", default=128, type=int)
     arg_parser.add_argument("-dropout", default=0.1, type=float)
-    arg_parser.add_argument("-batch_size", default=32, type=int)
     w2v_group = arg_parser.add_mutually_exclusive_group(required=True)
     w2v_group.add_argument("-pretrained")
     w2v_group.add_argument("-w2v_size", type=int)
     arg_parser.add_argument("-w2v_freeze", type=bool, default=False)
     arg_parser.add_argument("-pos_size", default=30, type=int)
-    arg_parser.add_argument("--seed", default=21, type=int)
-    arg_parser.add_argument("--cache_dir")
-    arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
+
+    # model parameters
     arg_parser.set_defaults(use_gpu=False)
+    arg_parser.add_argument("-epoch", default=20, type=int)
+    arg_parser.add_argument("-batch_size", default=32, type=int)
+    arg_parser.add_argument("-lr", default=0.001, type=float)
+    arg_parser.add_argument("-log_every", default=10, type=int)
+    arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
+    arg_parser.add_argument("--seed", default=21, type=int)
+
     main(arg_parser.parse_args())

@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+import torch.nn.functional as F
 
 
 class MaskedGRU(nn.Module):
@@ -71,6 +72,52 @@ class Encoder(nn.Module):
         return outputs, masks, hidden
 
 
+class Decoder(nn.Module):
+    def __init__(self, inputs_size, hidden_size):
+        super(Decoder, self).__init__()
+        self.input_dense = nn.Linear(inputs_size, hidden_size)
+        self.rnn = nn.GRU(hidden_size, hidden_size, batch_first=True)
+        self.output_size = hidden_size
+        self.hx = None
+
+    def forward(self, input, init_state):
+        return self.run_step(input)
+
+    def run_batch(self, inputs, init_states, masks):
+        inputs = self.input_dense(inputs) * masks.unsqueeze(-1).float()
+        outputs, _ = self.rnn(inputs, init_states.unsqueeze(0))
+        outputs = outputs * masks.unsqueeze(-1).float()
+        return outputs
+
+    def reset(self):
+        self.hx = None
+
+    def run_step(self, input):
+        ...
+
+
+class BiLinearAttention(nn.Module):
+    def __init__(self, encoder_size, decoder_size, hidden_size):
+        super(BiLinearAttention, self).__init__()
+        self.e_mlp = nn.Sequential(
+            nn.Linear(encoder_size, hidden_size),
+            nn.ReLU()
+        )
+        self.d_mlp = nn.Sequential(
+            nn.Linear(decoder_size, hidden_size),
+            nn.ReLU()
+        )
+        self.W = nn.Parameter(torch.empty(1, hidden_size, hidden_size, dtype=torch.float))
+        nn.init.xavier_normal_(self.W)
+
+    def forward(self, e_outputs, d_outputs, masks):
+        e_outputs = self.e_mlp(e_outputs)
+        d_outputs = self.d_mlp(d_outputs)
+        attn = d_outputs.bmm(e_outputs.matmul(self.W).transpose(-2, -1))
+        attn[masks == 0] = -1e8
+        return attn
+
+
 class PartitionPtr(nn.Module):
     def __init__(self, hidden_size, dropout,
                  word_vocab, pos_vocab, nuc_label,
@@ -90,6 +137,9 @@ class PartitionPtr(nn.Module):
         # component
         self.edu_encoder = BiGRUEDUEncoder(self.w2v_size+self.pos_size, hidden_size)
         self.encoder = Encoder(self.edu_encoder.output_size, hidden_size, dropout)
+        self.context_dense = nn.Linear(self.encoder.output_size, hidden_size)
+        self.decoder = Decoder(self.encoder.output_size*2, hidden_size)
+        self.attention = BiLinearAttention(self.encoder.output_size, self.decoder.output_size, hidden_size)
 
     def forward(self, inputs):
         ...
@@ -112,6 +162,32 @@ class PartitionPtr(nn.Module):
         e_masks = (e_masks.sum(-1) > 0).int()
         return edu_encoded, e_masks
 
-    def loss(self, e_inputs, d_inputs, preds):
+    def _decode_batch(self, e_outputs, e_outputs_masks, e_contexts, d_inputs):
+        d_inputs_indices, d_masks = d_inputs
+        d_outputs_masks = (d_masks.sum(-1) > 0).type_as(d_masks)
+
+        d_init_states = self.context_dense(e_contexts)
+
+        d_inputs = e_outputs[torch.arange(e_outputs.size(0)), d_inputs_indices.permute(2, 1, 0)].permute(2, 1, 0, 3)
+        d_inputs = d_inputs.contiguous().view(d_inputs.size(0), d_inputs.size(1), -1)
+        d_inputs = d_inputs * d_outputs_masks.unsqueeze(-1).float()
+
+        d_outputs = self.decoder.run_batch(d_inputs, d_init_states, d_outputs_masks)
+        return d_outputs, d_outputs_masks, d_masks
+
+    def loss(self, e_inputs, d_inputs, grounds):
         e_inputs, e_masks = self.encode_edus(e_inputs)
         e_outputs, e_outputs_masks, e_contexts = self.encoder(e_inputs, e_masks)
+        d_outputs, d_outputs_masks, d_masks = self._decode_batch(e_outputs, e_outputs_masks, e_contexts, d_inputs)
+
+        attn = self.attention(e_outputs, d_outputs, d_masks)
+        splits_predict = attn.log_softmax(dim=2)
+        splits_ground, nucs_ground = grounds
+        splits_ground = splits_ground.view(-1)
+        splits_predict = splits_predict.view(splits_ground.size(0), -1)
+        splits_masks = d_outputs_masks.view(-1).float()
+        splits_loss = F.nll_loss(splits_predict, splits_ground, reduction="none")
+        splits_loss = (splits_loss * splits_masks).sum() / splits_masks.sum()
+
+        loss = splits_loss
+        return loss
