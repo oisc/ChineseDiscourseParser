@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch.nn.functional as F
+import numpy as np
 
 
 class MaskedGRU(nn.Module):
@@ -78,10 +79,9 @@ class Decoder(nn.Module):
         self.input_dense = nn.Linear(inputs_size, hidden_size)
         self.rnn = nn.GRU(hidden_size, hidden_size, batch_first=True)
         self.output_size = hidden_size
-        self.hx = None
 
-    def forward(self, input, init_state):
-        return self.run_step(input)
+    def forward(self, input, state):
+        return self.run_step(input, state)
 
     def run_batch(self, inputs, init_states, masks):
         inputs = self.input_dense(inputs) * masks.unsqueeze(-1).float()
@@ -89,11 +89,10 @@ class Decoder(nn.Module):
         outputs = outputs * masks.unsqueeze(-1).float()
         return outputs
 
-    def reset(self):
-        self.hx = None
-
-    def run_step(self, input):
-        ...
+    def run_step(self, input, state):
+        input = self.input_dense(input)
+        output, state = self.rnn(input, state)
+        return output, state
 
 
 class BiLinearAttention(nn.Module):
@@ -124,6 +123,7 @@ class PartitionPtr(nn.Module):
                  pretrained=None, w2v_size=None, w2v_freeze=False, pos_size=30,
                  use_gpu=False):
         super(PartitionPtr, self).__init__()
+        self.use_gpu = use_gpu
         self.word_vocab = word_vocab
         self.pos_vocab = pos_vocab
         self.nuc_label = nuc_label
@@ -139,10 +139,86 @@ class PartitionPtr(nn.Module):
         self.encoder = Encoder(self.edu_encoder.output_size, hidden_size, dropout)
         self.context_dense = nn.Linear(self.encoder.output_size, hidden_size)
         self.decoder = Decoder(self.encoder.output_size*2, hidden_size)
-        self.attention = BiLinearAttention(self.encoder.output_size, self.decoder.output_size, hidden_size)
+        self.split_attention = BiLinearAttention(self.encoder.output_size, self.decoder.output_size, hidden_size)
 
-    def forward(self, inputs):
-        ...
+    def forward(self, session):
+        return self.decode(session)
+
+    class Session:
+        def __init__(self, memory, state):
+            self.n = memory.size(1) - 2
+            self.step = 0
+            self.memory = memory
+            self.state = state
+            self.stack = [(0, self.n + 1)]
+            self.scores = np.zeros((self.n, self.n+2), dtype=np.float)
+            self.splits = []
+
+        def forward(self, score, state, split):
+            left, right = self.stack.pop()
+            if right - split > 1:
+                self.stack.append((split, right))
+            if split - left > 1:
+                self.stack.append((left, split))
+            self.splits.append((left, split, right))
+            self.state = state
+            self.scores[self.step] = score
+            self.step += 1
+            return self
+
+        def terminate(self):
+            return self.step >= self.n
+
+        def __repr__(self):
+            return "[step %d]memory size: %s, state size: %s\n stack:\n%s\n, scores:\n %s" % \
+                   (self.step, str(self.memory.size()), str(self.state.size()),
+                    "\n".join(map(str, self.stack)) or "[]",
+                    str(self.scores))
+
+        def __str__(self):
+            return repr(self)
+
+    def init_session(self, edus):
+        edu_words = [edu.words for edu in edus]
+        edu_poses = [edu.tags for edu in edus]
+        max_word_seqlen = max(len(words) for words in edu_words)
+        edu_seqlen = len(edu_words)
+
+        e_input_words = np.zeros((1, edu_seqlen, max_word_seqlen), dtype=np.long)
+        e_input_poses = np.zeros_like(e_input_words)
+        e_input_masks = np.zeros_like(e_input_words, dtype=np.uint8)
+
+        for i, (words, poses) in enumerate(zip(edu_words, edu_poses)):
+            e_input_words[0, i, :len(words)] = [self.word_vocab[word] for word in words]
+            e_input_poses[0, i, :len(poses)] = [self.pos_vocab[pos] for pos in poses]
+            e_input_masks[0, i, :len(words)] = 1
+
+        e_input_words = torch.from_numpy(e_input_words).long()
+        e_input_poses = torch.from_numpy(e_input_poses).long()
+        e_input_masks = torch.from_numpy(e_input_masks).byte()
+
+        if self.use_gpu:
+            e_input_words = e_input_words.cuda()
+            e_input_poses = e_input_poses.cuda()
+            e_input_masks = e_input_masks.cuda()
+
+        edu_encoded, e_masks = self.encode_edus((e_input_words, e_input_poses, e_input_masks))
+        memory, _, context = self.encoder(edu_encoded, e_masks)
+        state = self.context_dense(context).unsqueeze(0)
+        return PartitionPtr.Session(memory, state)
+
+    def decode(self, session):
+        left, right = session.stack[-1]
+        d_input = torch.cat([session.memory[0, left], session.memory[0, right]]).view(1, 1, -1)
+        d_output, state = self.decoder(d_input, session.state)
+
+        masks = torch.zeros(1, 1, session.n+2, dtype=torch.uint8)
+        masks[0, 0, left+1:right] = 1
+        if self.use_gpu:
+            masks = masks.cuda()
+        scores = self.split_attention(session.memory, d_output, masks)
+        scores = scores.softmax(dim=-1)
+        return scores[0, 0].cpu().detach().numpy(), state
 
     def encode_edus(self, e_inputs):
         e_input_words, e_input_poses, e_masks = e_inputs
@@ -162,7 +238,7 @@ class PartitionPtr(nn.Module):
         e_masks = (e_masks.sum(-1) > 0).int()
         return edu_encoded, e_masks
 
-    def _decode_batch(self, e_outputs, e_outputs_masks, e_contexts, d_inputs):
+    def _decode_batch(self, e_outputs, e_contexts, d_inputs):
         d_inputs_indices, d_masks = d_inputs
         d_outputs_masks = (d_masks.sum(-1) > 0).type_as(d_masks)
 
@@ -178,10 +254,10 @@ class PartitionPtr(nn.Module):
     def loss(self, e_inputs, d_inputs, grounds):
         e_inputs, e_masks = self.encode_edus(e_inputs)
         e_outputs, e_outputs_masks, e_contexts = self.encoder(e_inputs, e_masks)
-        d_outputs, d_outputs_masks, d_masks = self._decode_batch(e_outputs, e_outputs_masks, e_contexts, d_inputs)
+        d_outputs, d_outputs_masks, d_masks = self._decode_batch(e_outputs, e_contexts, d_inputs)
 
-        attn = self.attention(e_outputs, d_outputs, d_masks)
-        splits_predict = attn.log_softmax(dim=2)
+        splits_attn = self.split_attention(e_outputs, d_outputs, d_masks)
+        splits_predict = splits_attn.log_softmax(dim=2)
         splits_ground, nucs_ground = grounds
         splits_ground = splits_ground.view(-1)
         splits_predict = splits_predict.view(splits_ground.size(0), -1)

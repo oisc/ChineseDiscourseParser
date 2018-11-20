@@ -8,8 +8,9 @@ from dataset import CDTB
 from collections import Counter
 from itertools import chain
 from structure.vocab import Vocab, Label
-from structure.nodes import node_type_filter, EDU, Relation, Sentence
+from structure.nodes import node_type_filter, Paragraph, EDU, Relation, Sentence, TEXT
 from treebuilder.partptr.model import PartitionPtr
+from treebuilder.partptr.parser import PartitionPtrParser
 import torch.optim as optim
 
 
@@ -145,6 +146,27 @@ def gen_batch_iter(instances, batch_size, use_gpu=False):
         offset = offset + batch_size
 
 
+def parse_and_eval(dataset, model):
+    model.eval()
+    parser = PartitionPtrParser(model)
+
+    grounded = list(filter(lambda d: d.root_relation(), chain(*dataset)))
+    stripped = []
+    for paragraph in grounded:
+        edus = []
+        for edu in paragraph.edus():
+            edu_copy = EDU(TEXT(edu.text))
+            setattr(edu_copy, "words", edu.words)
+            setattr(edu_copy, "tags", edu.tags)
+            edus.append(edu_copy)
+        stripped.append(edus)
+    parsed = []
+    for edus in stripped:
+        parse = parser.parse(edus)
+        parsed.append(parse)
+    return ...
+
+
 def main(args):
     # set seed for reproducibility
     random.seed(args.seed)
@@ -155,10 +177,10 @@ def main(args):
     cdtb = CDTB(args.data, "TRAIN", "VALIDATE", "TEST", ctb_dir=args.ctb_dir, preprocess=True, cache_dir=args.cache_dir)
     # build vocabulary
     word_vocab, pos_vocab, nuc_label = build_vocab(cdtb.train)
-    trainset, validateset, testest = (numericalize(dataset, word_vocab, pos_vocab, nuc_label)
-                                      for dataset in [cdtb.train, cdtb.validate, cdtb.test])
-    logging.info("num of instances trainset: %d validateset: %d testset: %d" %
-                 (len(trainset), len(validateset), len(testest)))
+    # trainset, validateset, testest = (numericalize(dataset, word_vocab, pos_vocab, nuc_label)
+    #                                   for dataset in [cdtb.train, cdtb.validate, cdtb.test])
+    trainset = numericalize(cdtb.train, word_vocab, pos_vocab, nuc_label)
+    logging.info("num of instances trainset: %d" % len(trainset))
     # build model
     model = PartitionPtr(hidden_size=args.hidden_size, dropout=args.dropout,
                          word_vocab=word_vocab, pos_vocab=pos_vocab, nuc_label=nuc_label, pos_size=args.pos_size,
@@ -169,22 +191,24 @@ def main(args):
     logging.info("model:\n%s" % str(model))
 
     # train and evaluate
-    iiter = 0
+    niter = 0
     log_loss = 0.
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    for iepoch in range(1, args.epoch + 1):
+    for nepoch in range(1, args.epoch + 1):
         batch_iter = gen_batch_iter(trainset, args.batch_size, args.use_gpu)
-        for ibatch, (e_inputs, d_inputs, grounds) in enumerate(batch_iter, start=1):
-            iiter += 1
+        for nbatch, (e_inputs, d_inputs, grounds) in enumerate(batch_iter, start=1):
+            niter += 1
             model.train()
             optimizer.zero_grad()
             loss = model.loss(e_inputs, d_inputs, grounds)
             loss.backward()
             optimizer.step()
             log_loss += loss.item()
-            if iiter % args.log_every == 0:
-                logging.info("[iter %-6d]epoch: %-3d, batch %-5d, train loss: %.5f" % (iiter, iepoch, ibatch, log_loss))
+            if niter % args.log_every == 0:
+                logging.info("[iter %-6d]epoch: %-3d, batch %-5d, train loss: %.5f" % (niter, nepoch, nbatch, log_loss))
                 log_loss = 0.
+            if niter % args.validate_every == 0:
+                scores = parse_and_eval(cdtb.validate, model)
 
 
 if __name__ == '__main__':
@@ -211,6 +235,7 @@ if __name__ == '__main__':
     arg_parser.add_argument("-batch_size", default=32, type=int)
     arg_parser.add_argument("-lr", default=0.001, type=float)
     arg_parser.add_argument("-log_every", default=10, type=int)
+    arg_parser.add_argument("-validate_every", default=200, type=int)
     arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
     arg_parser.add_argument("--seed", default=21, type=int)
 
