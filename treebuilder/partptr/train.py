@@ -12,6 +12,7 @@ from structure.nodes import node_type_filter, Paragraph, EDU, Relation, Sentence
 from treebuilder.partptr.model import PartitionPtr
 from treebuilder.partptr.parser import PartitionPtrParser
 import torch.optim as optim
+from util.eval import evaluation_trees
 
 
 def build_vocab(dataset):
@@ -150,20 +151,21 @@ def parse_and_eval(dataset, model):
     model.eval()
     parser = PartitionPtrParser(model)
 
-    grounded = list(filter(lambda d: d.root_relation(), chain(*dataset)))
-    stripped = []
-    for paragraph in grounded:
+    golds = list(filter(lambda d: d.root_relation(), chain(*dataset)))
+    strips = []
+    for paragraph in golds:
         edus = []
         for edu in paragraph.edus():
-            edu_copy = EDU(TEXT(edu.text))
+            edu_copy = EDU([TEXT(edu.text)])
             setattr(edu_copy, "words", edu.words)
             setattr(edu_copy, "tags", edu.tags)
             edus.append(edu_copy)
-        stripped.append(edus)
-    parsed = []
-    for edus in stripped:
+        strips.append(edus)
+    parses = []
+    for edus in strips:
         parse = parser.parse(edus)
-        parsed.append(parse)
+        parses.append(parse)
+    evaluation_trees(parses, golds)
     return ...
 
 
@@ -209,6 +211,7 @@ def main(args):
                 log_loss = 0.
             if niter % args.validate_every == 0:
                 scores = parse_and_eval(cdtb.validate, model)
+        scores = parse_and_eval(cdtb.validate, model)
 
 
 if __name__ == '__main__':
@@ -235,7 +238,7 @@ if __name__ == '__main__':
     arg_parser.add_argument("-batch_size", default=32, type=int)
     arg_parser.add_argument("-lr", default=0.001, type=float)
     arg_parser.add_argument("-log_every", default=10, type=int)
-    arg_parser.add_argument("-validate_every", default=200, type=int)
+    arg_parser.add_argument("-validate_every", default=20, type=int)
     arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
     arg_parser.add_argument("--seed", default=21, type=int)
 
