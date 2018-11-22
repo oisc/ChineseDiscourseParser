@@ -150,8 +150,8 @@ def gen_batch_iter(instances, batch_size, use_gpu=False):
 def parse_and_eval(dataset, model):
     model.eval()
     parser = PartitionPtrParser(model)
-
     golds = list(filter(lambda d: d.root_relation(), chain(*dataset)))
+    num_instances = len(golds)
     strips = []
     for paragraph in golds:
         edus = []
@@ -165,8 +165,19 @@ def parse_and_eval(dataset, model):
     for edus in strips:
         parse = parser.parse(edus)
         parses.append(parse)
-    evaluation_trees(parses, golds)
-    return ...
+    return num_instances, evaluation_trees(parses, golds, treewise_avearge=True)
+
+
+def gen_report(span_score, nuc_score, ctype_score, ftype_score):
+    report = '\n'
+    report += '                 precision    recall    f1\n'
+    report += '---------------------------------------------\n'
+    report += 'span             %5.3f        %5.3f     %5.3f\n' % span_score
+    report += 'nuclear          %5.3f        %5.3f     %5.3f\n' % nuc_score
+    report += 'ctype            %5.3f        %5.3f     %5.3f\n' % ctype_score
+    report += 'ftype            %5.3f        %5.3f     %5.3f\n' % ftype_score
+    report += '\n'
+    return report
 
 
 def main(args):
@@ -210,8 +221,13 @@ def main(args):
                 logging.info("[iter %-6d]epoch: %-3d, batch %-5d, train loss: %.5f" % (niter, nepoch, nbatch, log_loss))
                 log_loss = 0.
             if niter % args.validate_every == 0:
-                scores = parse_and_eval(cdtb.validate, model)
-        scores = parse_and_eval(cdtb.validate, model)
+                num_instances, scores = parse_and_eval(cdtb.validate, model)
+                logging.info("validation on %d instances" % num_instances)
+                logging.info(gen_report(*scores))
+
+                num_instances, scores = parse_and_eval(cdtb.test, model)
+                logging.info("test on %d instances" % num_instances)
+                logging.info(gen_report(*scores))
 
 
 if __name__ == '__main__':
@@ -225,21 +241,19 @@ if __name__ == '__main__':
 
     # model parameters
     arg_parser.add_argument("-hidden_size", default=128, type=int)
-    arg_parser.add_argument("-dropout", default=0.1, type=float)
+    arg_parser.add_argument("-dropout", default=0.33, type=float)
     w2v_group = arg_parser.add_mutually_exclusive_group(required=True)
     w2v_group.add_argument("-pretrained")
     w2v_group.add_argument("-w2v_size", type=int)
     arg_parser.add_argument("-w2v_freeze", type=bool, default=False)
     arg_parser.add_argument("-pos_size", default=30, type=int)
-
-    # model parameters
-    arg_parser.set_defaults(use_gpu=False)
     arg_parser.add_argument("-epoch", default=20, type=int)
     arg_parser.add_argument("-batch_size", default=32, type=int)
     arg_parser.add_argument("-lr", default=0.001, type=float)
     arg_parser.add_argument("-log_every", default=10, type=int)
     arg_parser.add_argument("-validate_every", default=20, type=int)
-    arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
     arg_parser.add_argument("--seed", default=21, type=int)
+    arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
+    arg_parser.set_defaults(use_gpu=False)
 
     main(arg_parser.parse_args())
