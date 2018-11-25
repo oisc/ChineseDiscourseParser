@@ -45,7 +45,6 @@ class BiGRUEDUEncoder(nn.Module):
         self.output_size = hidden_size * 2
 
     def forward(self, inputs, masks):
-        # [batch_size*max_edu_seqlen]
         lengths = masks.sum(-1)
         outputs, hidden = self.rnn(inputs, lengths)
         return hidden
@@ -95,9 +94,9 @@ class Decoder(nn.Module):
         return output, state
 
 
-class BiLinearAttention(nn.Module):
+class SplitAttention(nn.Module):
     def __init__(self, encoder_size, decoder_size, hidden_size):
-        super(BiLinearAttention, self).__init__()
+        super(SplitAttention, self).__init__()
         self.e_mlp = nn.Sequential(
             nn.Linear(encoder_size, hidden_size),
             nn.ReLU()
@@ -107,20 +106,71 @@ class BiLinearAttention(nn.Module):
             nn.ReLU()
         )
         self.W = nn.Parameter(torch.empty(1, hidden_size, hidden_size, dtype=torch.float))
+        self.v = nn.Parameter(torch.empty(hidden_size, dtype=torch.float))
         nn.init.xavier_normal_(self.W)
+        nn.init.xavier_normal_(self.v.unsqueeze(0))
 
     def forward(self, e_outputs, d_outputs, masks):
         e_outputs = self.e_mlp(e_outputs)
         d_outputs = self.d_mlp(d_outputs)
-        attn = d_outputs.bmm(e_outputs.matmul(self.W).transpose(-2, -1))
+        attn = d_outputs.bmm(e_outputs.matmul(self.W).transpose(-2, -1)) + e_outputs.matmul(self.v).unsqueeze(1)
         attn[masks == 0] = -1e8
         return attn
+
+
+class BiaffineAttention(nn.Module):
+    def __init__(self, encoder_size, decoder_size, num_labels, hidden_size):
+        super(BiaffineAttention, self).__init__()
+        self.encoder_size = encoder_size
+        self.decoder_size = decoder_size
+        self.num_labels = num_labels
+        self.hidden_size = hidden_size
+        self.e_mlp = nn.Sequential(
+            nn.Linear(encoder_size, hidden_size),
+            nn.ReLU()
+        )
+        self.d_mlp = nn.Sequential(
+            nn.Linear(decoder_size, hidden_size),
+            nn.ReLU()
+        )
+        self.W_e = nn.Parameter(torch.empty(num_labels, hidden_size, dtype=torch.float))
+        self.W_d = nn.Parameter(torch.empty(num_labels, hidden_size, dtype=torch.float))
+        self.U = nn.Parameter(torch.empty(num_labels, hidden_size, hidden_size, dtype=torch.float))
+        self.b = nn.Parameter(torch.zeros(num_labels, 1, 1, dtype=torch.float))
+        nn.init.xavier_normal_(self.W_e)
+        nn.init.xavier_normal_(self.W_d)
+        nn.init.xavier_normal_(self.U)
+
+    def forward(self, e_outputs, d_outputs):
+        # e_outputs [batch, length_encoder, encoder_size]
+        # d_outputs [batch, length_decoder, decoder_size]
+
+        # [batch, length_encoder, hidden_size]
+        e_outputs = self.e_mlp(e_outputs)
+        # [batch, length_encoder, hidden_size]
+        d_outputs = self.d_mlp(d_outputs)
+
+        # [batch, num_labels, length_encoder, 1]
+        out_e = (self.W_e @ e_outputs.transpose(1, 2)).unsqueeze(2)
+        # [batch, num_labels, 1, length_decoder]
+        out_d = (self.W_d @ d_outputs.transpose(1, 2)).unsqueeze(3)
+
+        # [batch, 1, length_decoder, hidden_size] @ [num_labels, hidden_size, hidden_size]
+        # [batch, num_labels, length_decoder, hidden_size]
+        out_u = d_outputs.unsqueeze(1) @ self.U
+        # [batch, num_labels, length_decoder, hidden_size] * [batch, 1, hidden_size, length_encoder]
+        # [batch, num_labels, length_decoder, length_encoder]
+        out_u = out_u @ e_outputs.unsqueeze(1).transpose(2, 3)
+        # [batch, length_decoder, length_encoder, num_labels]
+        out = (out_e + out_d + out_u + self.b).permute(0, 2, 3, 1)
+        return out
 
 
 class PartitionPtr(nn.Module):
     def __init__(self, hidden_size, dropout,
                  word_vocab, pos_vocab, nuc_label,
                  pretrained=None, w2v_size=None, w2v_freeze=False, pos_size=30,
+                 split_mlp_size=32, nuc_mlp_size=128,
                  use_gpu=False):
         super(PartitionPtr, self).__init__()
         self.use_gpu = use_gpu
@@ -139,7 +189,9 @@ class PartitionPtr(nn.Module):
         self.encoder = Encoder(self.edu_encoder.output_size, hidden_size, dropout)
         self.context_dense = nn.Linear(self.encoder.output_size, hidden_size)
         self.decoder = Decoder(self.encoder.output_size*2, hidden_size)
-        self.split_attention = BiLinearAttention(self.encoder.output_size, self.decoder.output_size, hidden_size)
+        self.split_attention = SplitAttention(self.encoder.output_size, self.decoder.output_size, split_mlp_size)
+        self.nuc_classifier = BiaffineAttention(self.encoder.output_size, self.decoder.output_size, len(self.nuc_label),
+                                                nuc_mlp_size)
 
     def forward(self, session):
         return self.decode(session)
@@ -153,14 +205,16 @@ class PartitionPtr(nn.Module):
             self.stack = [(0, self.n + 1)]
             self.scores = np.zeros((self.n, self.n+2), dtype=np.float)
             self.splits = []
+            self.nuclears = []
 
-        def forward(self, score, state, split):
+        def forward(self, score, state, split, nuclear):
             left, right = self.stack.pop()
             if right - split > 1:
                 self.stack.append((split, right))
             if split - left > 1:
                 self.stack.append((left, split))
             self.splits.append((left, split, right))
+            self.nuclears.append(nuclear)
             self.state = state
             self.scores[self.step] = score
             self.step += 1
@@ -216,9 +270,12 @@ class PartitionPtr(nn.Module):
         masks[0, 0, left+1:right] = 1
         if self.use_gpu:
             masks = masks.cuda()
-        scores = self.split_attention(session.memory, d_output, masks)
-        scores = scores.softmax(dim=-1)
-        return scores[0, 0].cpu().detach().numpy(), state
+        split_scores = self.split_attention(session.memory, d_output, masks)
+        split_scores = split_scores.softmax(dim=-1)
+        nucs_score = self.nuc_classifier(session.memory, d_output).softmax(dim=-1) * masks.unsqueeze(-1).float()
+        split_scores = split_scores[0, 0].cpu().detach().numpy()
+        nucs_score = nucs_score[0, 0].cpu().detach().numpy()
+        return split_scores, nucs_score, state
 
     def encode_edus(self, e_inputs):
         e_input_words, e_input_poses, e_masks = e_inputs
@@ -256,14 +313,20 @@ class PartitionPtr(nn.Module):
         e_outputs, e_outputs_masks, e_contexts = self.encoder(e_inputs, e_masks)
         d_outputs, d_outputs_masks, d_masks = self._decode_batch(e_outputs, e_contexts, d_inputs)
 
+        splits_ground, nucs_ground = grounds
+        # split loss
         splits_attn = self.split_attention(e_outputs, d_outputs, d_masks)
         splits_predict = splits_attn.log_softmax(dim=2)
-        splits_ground, nucs_ground = grounds
         splits_ground = splits_ground.view(-1)
         splits_predict = splits_predict.view(splits_ground.size(0), -1)
         splits_masks = d_outputs_masks.view(-1).float()
         splits_loss = F.nll_loss(splits_predict, splits_ground, reduction="none")
         splits_loss = (splits_loss * splits_masks).sum() / splits_masks.sum()
-
-        loss = splits_loss
-        return loss
+        # nuclear loss
+        nucs_score = self.nuc_classifier(e_outputs, d_outputs)
+        nucs_score = nucs_score.log_softmax(dim=-1) * d_masks.unsqueeze(-1).float()
+        nucs_score = nucs_score.view(nucs_score.size(0)*nucs_score.size(1), nucs_score.size(2), nucs_score.size(3))
+        target_nucs_score = nucs_score[torch.arange(nucs_score.size(0)), splits_ground]
+        target_nucs_ground = nucs_ground.view(-1)
+        nucs_loss = F.nll_loss(target_nucs_score, target_nucs_ground)
+        return splits_loss, nucs_loss

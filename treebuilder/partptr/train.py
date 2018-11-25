@@ -8,7 +8,7 @@ from dataset import CDTB
 from collections import Counter
 from itertools import chain
 from structure.vocab import Vocab, Label
-from structure.nodes import node_type_filter, Paragraph, EDU, Relation, Sentence, TEXT
+from structure.nodes import node_type_filter, EDU, Relation, Sentence, TEXT
 from treebuilder.partptr.model import PartitionPtr
 from treebuilder.partptr.parser import PartitionPtrParser
 import torch.optim as optim
@@ -141,6 +141,7 @@ def gen_batch_iter(instances, batch_size, use_gpu=False):
             e_masks = e_masks.cuda()
             d_inputs = d_inputs.cuda()
             d_outputs = d_outputs.cuda()
+            d_output_nucs = d_output_nucs.cuda()
             d_masks = d_masks.cuda()
 
         yield (e_input_words, e_input_poses, e_masks), (d_inputs, d_masks), (d_outputs, d_output_nucs)
@@ -198,6 +199,7 @@ def main(args):
     model = PartitionPtr(hidden_size=args.hidden_size, dropout=args.dropout,
                          word_vocab=word_vocab, pos_vocab=pos_vocab, nuc_label=nuc_label, pos_size=args.pos_size,
                          pretrained=args.pretrained, w2v_size=args.w2v_size, w2v_freeze=args.w2v_freeze,
+                         split_mlp_size=args.split_mlp_size, nuc_mlp_size=args.nuc_mlp_size,
                          use_gpu=args.use_gpu)
     if args.use_gpu:
         model.cuda()
@@ -205,6 +207,8 @@ def main(args):
 
     # train and evaluate
     niter = 0
+    log_splits_loss = 0.
+    log_nucs_loss = 0.
     log_loss = 0.
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     for nepoch in range(1, args.epoch + 1):
@@ -213,12 +217,19 @@ def main(args):
             niter += 1
             model.train()
             optimizer.zero_grad()
-            loss = model.loss(e_inputs, d_inputs, grounds)
+            splits_loss, nucs_loss = model.loss(e_inputs, d_inputs, grounds)
+            loss = args.a_split_loss * splits_loss + args.a_nuclear_loss * nucs_loss
             loss.backward()
             optimizer.step()
+            log_splits_loss += splits_loss.item()
+            log_nucs_loss += nucs_loss.item()
             log_loss += loss.item()
             if niter % args.log_every == 0:
-                logging.info("[iter %-6d]epoch: %-3d, batch %-5d, train loss: %.5f" % (niter, nepoch, nbatch, log_loss))
+                logging.info("[iter %-6d]epoch: %-3d, batch %-5d,"
+                             "train splits loss:%.5f, nuclear loss %.5f, loss %.5f" %
+                             (niter, nepoch, nbatch, log_splits_loss, log_nucs_loss, log_loss))
+                log_splits_loss = 0.
+                log_nucs_loss = 0.
                 log_loss = 0.
             if niter % args.validate_every == 0:
                 num_instances, scores = parse_and_eval(cdtb.validate, model)
@@ -245,13 +256,20 @@ if __name__ == '__main__':
     w2v_group = arg_parser.add_mutually_exclusive_group(required=True)
     w2v_group.add_argument("-pretrained")
     w2v_group.add_argument("-w2v_size", type=int)
-    arg_parser.add_argument("-w2v_freeze", type=bool, default=False)
     arg_parser.add_argument("-pos_size", default=30, type=int)
+    arg_parser.add_argument("-split_mlp_size", default=128, type=int)
+    arg_parser.add_argument("-nuc_mlp_size", default=64, type=int)
+    arg_parser.add_argument("--w2v_freeze", dest="w2v_freeze", action="store_true")
+    arg_parser.set_defaults(w2v_freeze=False)
+
+    # train parameters
     arg_parser.add_argument("-epoch", default=20, type=int)
     arg_parser.add_argument("-batch_size", default=32, type=int)
-    arg_parser.add_argument("-lr", default=0.001, type=float)
+    arg_parser.add_argument("-lr", default=0.0001, type=float)
     arg_parser.add_argument("-log_every", default=10, type=int)
-    arg_parser.add_argument("-validate_every", default=20, type=int)
+    arg_parser.add_argument("-validate_every", default=10, type=int)
+    arg_parser.add_argument("-a_split_loss", default=1.0, type=float)
+    arg_parser.add_argument("-a_nuclear_loss", default=1.0, type=float)
     arg_parser.add_argument("--seed", default=21, type=int)
     arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
     arg_parser.set_defaults(use_gpu=False)
