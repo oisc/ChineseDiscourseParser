@@ -267,7 +267,7 @@ def main(args):
                 writer.add_scalar("test/span_f1", test_scores[0][2], niter)
                 writer.add_scalar("test/nuclear_f1", test_scores[1][2], niter)
                 writer.add_scalar("test/coarse_relation_f1", test_scores[2][2], niter)
-                writer.add_scalar("test/fine_relation_f1", test_scores[2][2], niter)
+                writer.add_scalar("test/fine_relation_f1", test_scores[3][2], niter)
     writer.close()
 
 
