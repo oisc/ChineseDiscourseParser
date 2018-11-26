@@ -13,6 +13,7 @@ from treebuilder.partptr.model import PartitionPtr
 from treebuilder.partptr.parser import PartitionPtrParser
 import torch.optim as optim
 from util.eval import evaluation_trees
+from tensorboardX import SummaryWriter
 
 
 def build_vocab(dataset):
@@ -224,6 +225,7 @@ def main(args):
     log_rels_loss = 0.
     log_loss = 0.
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    writer = SummaryWriter("data/log")
     for nepoch in range(1, args.epoch + 1):
         batch_iter = gen_batch_iter(trainset, args.batch_size, args.use_gpu)
         for nbatch, (e_inputs, d_inputs, grounds) in enumerate(batch_iter, start=1):
@@ -242,18 +244,31 @@ def main(args):
                 logging.info("[iter %-6d]epoch: %-3d, batch %-5d,"
                              "train splits loss:%.5f, nuclear loss %.5f, relation loss %.5f, loss %.5f" %
                              (niter, nepoch, nbatch, log_splits_loss, log_nucs_loss, log_rels_loss, log_loss))
+                writer.add_scalar("train/split_loss", log_splits_loss, niter)
+                writer.add_scalar("train/nuclear_loss", log_nucs_loss, niter)
+                writer.add_scalar("train/relation_loss", log_rels_loss, niter)
+                writer.add_scalar("train/loss", log_loss, niter)
                 log_splits_loss = 0.
                 log_nucs_loss = 0.
                 log_rels_loss = 0.
                 log_loss = 0.
             if niter % args.validate_every == 0:
-                num_instances, scores = parse_and_eval(cdtb.validate, model)
+                num_instances, validate_scores = parse_and_eval(cdtb.validate, model)
                 logging.info("validation on %d instances" % num_instances)
-                logging.info(gen_report(*scores))
+                logging.info(gen_report(*validate_scores))
+                writer.add_scalar("validate/span_f1", validate_scores[0][2], niter)
+                writer.add_scalar("validate/nuclear_f1", validate_scores[1][2], niter)
+                writer.add_scalar("validate/coarse_relation_f1", validate_scores[2][2], niter)
+                writer.add_scalar("validate/fine_relation_f1", validate_scores[3][2], niter)
 
-                num_instances, scores = parse_and_eval(cdtb.test, model)
+                num_instances, test_scores = parse_and_eval(cdtb.test, model)
                 logging.info("test on %d instances" % num_instances)
-                logging.info(gen_report(*scores))
+                logging.info(gen_report(*test_scores))
+                writer.add_scalar("test/span_f1", test_scores[0][2], niter)
+                writer.add_scalar("test/nuclear_f1", test_scores[1][2], niter)
+                writer.add_scalar("test/coarse_relation_f1", test_scores[2][2], niter)
+                writer.add_scalar("test/fine_relation_f1", test_scores[2][2], niter)
+    writer.close()
 
 
 if __name__ == '__main__':
@@ -272,7 +287,7 @@ if __name__ == '__main__':
     w2v_group.add_argument("-pretrained")
     w2v_group.add_argument("-w2v_size", type=int)
     arg_parser.add_argument("-pos_size", default=30, type=int)
-    arg_parser.add_argument("-split_mlp_size", default=32, type=int)
+    arg_parser.add_argument("-split_mlp_size", default=64, type=int)
     arg_parser.add_argument("-nuc_mlp_size", default=32, type=int)
     arg_parser.add_argument("-rel_mlp_size", default=128, type=int)
     arg_parser.add_argument("--w2v_freeze", dest="w2v_freeze", action="store_true")

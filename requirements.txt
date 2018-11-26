@@ -4,3 +4,4 @@ thulac
 tqdm
 gensim
 numpy
+tensorboardX
