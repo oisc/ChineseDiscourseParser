@@ -19,6 +19,7 @@ def build_vocab(dataset):
     word_freq = Counter()
     pos_freq = Counter()
     nuc_freq = Counter()
+    rel_freq = Counter()
     for paragraph in chain(*dataset):
         for node in paragraph.iterfind(filter=node_type_filter([EDU, Relation])):
             if isinstance(node, EDU):
@@ -26,11 +27,13 @@ def build_vocab(dataset):
                 pos_freq.update(node.tags)
             elif isinstance(node, Relation):
                 nuc_freq[node.nuclear] += 1
+                rel_freq[node.ftype] += 1
 
     word_vocab = Vocab("word", word_freq)
     pos_vocab = Vocab("part of speech", pos_freq)
     nuc_label = Label("nuclear", nuc_freq)
-    return word_vocab, pos_vocab, nuc_label
+    rel_label = Label("relation", rel_freq)
+    return word_vocab, pos_vocab, nuc_label, rel_label
 
 
 def gen_decoder_data(root, edu2ids):
@@ -59,19 +62,21 @@ def gen_decoder_data(root, edu2ids):
                 split = edu2ids[left_child_edus[-1]] + 1
                 end = edu2ids[last_child_edus[-1]] + 1
                 nuc = root.nuclear
-                splits.append((start, split, end, nuc))
+                rel = root.ftype
+                splits.append((start, split, end, nuc, rel))
             child_edus.extend(left_child_edus)
             splits.extend(left_child_splits)
     return child_edus, splits
 
 
-def numericalize(dataset, word_vocab, pos_vocab, nuc_label):
+def numericalize(dataset, word_vocab, pos_vocab, nuc_label, rel_label):
     instances = []
     for paragraph in filter(lambda d: d.root_relation(), chain(*dataset)):
         encoder_inputs = []
         decoder_inputs = []
         pred_splits = []
         pred_nucs = []
+        pred_rels = []
         edus = list(paragraph.edus())
         for edu in edus:
             edu_word_ids = [word_vocab[word] for word in edu.words]
@@ -79,11 +84,12 @@ def numericalize(dataset, word_vocab, pos_vocab, nuc_label):
             encoder_inputs.append((edu_word_ids, edu_pos_ids))
         edu2ids = {edu: i for i, edu in enumerate(edus)}
         _, splits = gen_decoder_data(paragraph.root_relation(), edu2ids)
-        for start, split, end, nuc in splits:
+        for start, split, end, nuc, rel in splits:
             decoder_inputs.append((start, end))
             pred_splits.append(split)
             pred_nucs.append(nuc_label[nuc])
-        instances.append((encoder_inputs, decoder_inputs, pred_splits, pred_nucs))
+            pred_rels.append(rel_label[rel])
+        instances.append((encoder_inputs, decoder_inputs, pred_splits, pred_nucs, pred_rels))
     return instances
 
 
@@ -98,7 +104,7 @@ def gen_batch_iter(instances, batch_size, use_gpu=False):
         num_batch = batch.shape[0]
         max_edu_seqlen = 0
         max_word_seqlen = 0
-        for encoder_inputs, decoder_inputs, pred_splits, pred_nucs in batch:
+        for encoder_inputs, decoder_inputs, pred_splits, pred_nucs, pred_rels in batch:
             max_edu_seqlen = max_edu_seqlen if max_edu_seqlen >= len(encoder_inputs) else len(encoder_inputs)
             for edu_word_ids, edu_pos_ids in encoder_inputs:
                 max_word_seqlen = max_word_seqlen if max_word_seqlen >= len(edu_word_ids) else len(edu_word_ids)
@@ -111,9 +117,10 @@ def gen_batch_iter(instances, batch_size, use_gpu=False):
         d_inputs = np.zeros([num_batch, max_edu_seqlen-1, 2], dtype=np.long)
         d_outputs = np.zeros([num_batch, max_edu_seqlen-1], dtype=np.long)
         d_output_nucs = np.zeros([num_batch, max_edu_seqlen-1], dtype=np.long)
+        d_output_rels = np.zeros([num_batch, max_edu_seqlen - 1], dtype=np.long)
         d_masks = np.zeros([num_batch, max_edu_seqlen-1, max_edu_seqlen+1], dtype=np.uint8)
 
-        for batchi, (encoder_inputs, decoder_inputs, pred_splits, pred_nucs) in enumerate(batch):
+        for batchi, (encoder_inputs, decoder_inputs, pred_splits, pred_nucs, pred_rels) in enumerate(batch):
             for edui, (edu_word_ids, edu_pos_ids) in enumerate(encoder_inputs):
                 word_seqlen = len(edu_word_ids)
                 e_input_words[batchi][edui][:word_seqlen] = edu_word_ids
@@ -125,6 +132,7 @@ def gen_batch_iter(instances, batch_size, use_gpu=False):
                 d_masks[batchi][di][decoder_input[0]+1: decoder_input[1]] = 1
             d_outputs[batchi][:len(pred_splits)] = pred_splits
             d_output_nucs[batchi][:len(pred_nucs)] = pred_nucs
+            d_output_rels[batchi][:len(pred_rels)] = pred_rels
 
         # numpy to torch
         e_input_words = torch.from_numpy(e_input_words).long()
@@ -133,6 +141,7 @@ def gen_batch_iter(instances, batch_size, use_gpu=False):
         d_inputs = torch.from_numpy(d_inputs).long()
         d_outputs = torch.from_numpy(d_outputs).long()
         d_output_nucs = torch.from_numpy(d_output_nucs).long()
+        d_output_rels = torch.from_numpy(d_output_rels).long()
         d_masks = torch.from_numpy(d_masks).byte()
 
         if use_gpu:
@@ -142,9 +151,10 @@ def gen_batch_iter(instances, batch_size, use_gpu=False):
             d_inputs = d_inputs.cuda()
             d_outputs = d_outputs.cuda()
             d_output_nucs = d_output_nucs.cuda()
+            d_output_rels = d_output_rels.cuda()
             d_masks = d_masks.cuda()
 
-        yield (e_input_words, e_input_poses, e_masks), (d_inputs, d_masks), (d_outputs, d_output_nucs)
+        yield (e_input_words, e_input_poses, e_masks), (d_inputs, d_masks), (d_outputs, d_output_nucs, d_output_rels)
         offset = offset + batch_size
 
 
@@ -190,16 +200,18 @@ def main(args):
     # load dataset
     cdtb = CDTB(args.data, "TRAIN", "VALIDATE", "TEST", ctb_dir=args.ctb_dir, preprocess=True, cache_dir=args.cache_dir)
     # build vocabulary
-    word_vocab, pos_vocab, nuc_label = build_vocab(cdtb.train)
-    # trainset, validateset, testest = (numericalize(dataset, word_vocab, pos_vocab, nuc_label)
-    #                                   for dataset in [cdtb.train, cdtb.validate, cdtb.test])
-    trainset = numericalize(cdtb.train, word_vocab, pos_vocab, nuc_label)
+    word_vocab, pos_vocab, nuc_label, rel_label = build_vocab(cdtb.train)
+
+    trainset = numericalize(cdtb.train, word_vocab, pos_vocab, nuc_label, rel_label)
     logging.info("num of instances trainset: %d" % len(trainset))
+    logging.info("args: %s" % str(args))
     # build model
     model = PartitionPtr(hidden_size=args.hidden_size, dropout=args.dropout,
-                         word_vocab=word_vocab, pos_vocab=pos_vocab, nuc_label=nuc_label, pos_size=args.pos_size,
+                         word_vocab=word_vocab, pos_vocab=pos_vocab, nuc_label=nuc_label, rel_label=rel_label,
                          pretrained=args.pretrained, w2v_size=args.w2v_size, w2v_freeze=args.w2v_freeze,
+                         pos_size=args.pos_size,
                          split_mlp_size=args.split_mlp_size, nuc_mlp_size=args.nuc_mlp_size,
+                         rel_mlp_size=args.rel_mlp_size,
                          use_gpu=args.use_gpu)
     if args.use_gpu:
         model.cuda()
@@ -209,6 +221,7 @@ def main(args):
     niter = 0
     log_splits_loss = 0.
     log_nucs_loss = 0.
+    log_rels_loss = 0.
     log_loss = 0.
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     for nepoch in range(1, args.epoch + 1):
@@ -217,19 +230,21 @@ def main(args):
             niter += 1
             model.train()
             optimizer.zero_grad()
-            splits_loss, nucs_loss = model.loss(e_inputs, d_inputs, grounds)
-            loss = args.a_split_loss * splits_loss + args.a_nuclear_loss * nucs_loss
+            splits_loss, nucs_loss, rels_loss = model.loss(e_inputs, d_inputs, grounds)
+            loss = args.a_split_loss * splits_loss + args.a_nuclear_loss * nucs_loss + args.a_relation_loss * rels_loss
             loss.backward()
             optimizer.step()
             log_splits_loss += splits_loss.item()
             log_nucs_loss += nucs_loss.item()
+            log_rels_loss += rels_loss.item()
             log_loss += loss.item()
             if niter % args.log_every == 0:
                 logging.info("[iter %-6d]epoch: %-3d, batch %-5d,"
-                             "train splits loss:%.5f, nuclear loss %.5f, loss %.5f" %
-                             (niter, nepoch, nbatch, log_splits_loss, log_nucs_loss, log_loss))
+                             "train splits loss:%.5f, nuclear loss %.5f, relation loss %.5f, loss %.5f" %
+                             (niter, nepoch, nbatch, log_splits_loss, log_nucs_loss, log_rels_loss, log_loss))
                 log_splits_loss = 0.
                 log_nucs_loss = 0.
+                log_rels_loss = 0.
                 log_loss = 0.
             if niter % args.validate_every == 0:
                 num_instances, scores = parse_and_eval(cdtb.validate, model)
@@ -252,24 +267,26 @@ if __name__ == '__main__':
 
     # model parameters
     arg_parser.add_argument("-hidden_size", default=128, type=int)
-    arg_parser.add_argument("-dropout", default=0.33, type=float)
+    arg_parser.add_argument("-dropout", default=0.1, type=float)
     w2v_group = arg_parser.add_mutually_exclusive_group(required=True)
     w2v_group.add_argument("-pretrained")
     w2v_group.add_argument("-w2v_size", type=int)
     arg_parser.add_argument("-pos_size", default=30, type=int)
-    arg_parser.add_argument("-split_mlp_size", default=128, type=int)
-    arg_parser.add_argument("-nuc_mlp_size", default=64, type=int)
+    arg_parser.add_argument("-split_mlp_size", default=32, type=int)
+    arg_parser.add_argument("-nuc_mlp_size", default=32, type=int)
+    arg_parser.add_argument("-rel_mlp_size", default=128, type=int)
     arg_parser.add_argument("--w2v_freeze", dest="w2v_freeze", action="store_true")
     arg_parser.set_defaults(w2v_freeze=False)
 
     # train parameters
     arg_parser.add_argument("-epoch", default=20, type=int)
-    arg_parser.add_argument("-batch_size", default=32, type=int)
-    arg_parser.add_argument("-lr", default=0.0001, type=float)
+    arg_parser.add_argument("-batch_size", default=64, type=int)
+    arg_parser.add_argument("-lr", default=0.001, type=float)
     arg_parser.add_argument("-log_every", default=10, type=int)
     arg_parser.add_argument("-validate_every", default=10, type=int)
-    arg_parser.add_argument("-a_split_loss", default=1.0, type=float)
+    arg_parser.add_argument("-a_split_loss", default=0.1, type=float)
     arg_parser.add_argument("-a_nuclear_loss", default=1.0, type=float)
+    arg_parser.add_argument("-a_relation_loss", default=1.0, type=float)
     arg_parser.add_argument("--seed", default=21, type=int)
     arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
     arg_parser.set_defaults(use_gpu=False)
