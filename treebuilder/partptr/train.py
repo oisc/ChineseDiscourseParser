@@ -3,6 +3,7 @@ import argparse
 import logging
 import random
 import torch
+import copy
 import numpy as np
 from dataset import CDTB
 from collections import Counter
@@ -192,6 +193,11 @@ def gen_report(span_score, nuc_score, ctype_score, ftype_score):
     return report
 
 
+def model_score(scores):
+    eval_score = sum(score[2] for score in scores)
+    return eval_score
+
+
 def main(args):
     # set seed for reproducibility
     random.seed(args.seed)
@@ -224,8 +230,10 @@ def main(args):
     log_nucs_loss = 0.
     log_rels_loss = 0.
     log_loss = 0.
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
     writer = SummaryWriter("data/log")
+    best_model = None
+    best_model_score = 0.
     for nepoch in range(1, args.epoch + 1):
         batch_iter = gen_batch_iter(trainset, args.batch_size, args.use_gpu)
         for nbatch, (e_inputs, d_inputs, grounds) in enumerate(batch_iter, start=1):
@@ -260,14 +268,28 @@ def main(args):
                 writer.add_scalar("validate/nuclear_f1", validate_scores[1][2], niter)
                 writer.add_scalar("validate/coarse_relation_f1", validate_scores[2][2], niter)
                 writer.add_scalar("validate/fine_relation_f1", validate_scores[3][2], niter)
-
-                num_instances, test_scores = parse_and_eval(cdtb.test, model)
-                logging.info("test on %d instances" % num_instances)
-                logging.info(gen_report(*test_scores))
-                writer.add_scalar("test/span_f1", test_scores[0][2], niter)
-                writer.add_scalar("test/nuclear_f1", test_scores[1][2], niter)
-                writer.add_scalar("test/coarse_relation_f1", test_scores[2][2], niter)
-                writer.add_scalar("test/fine_relation_f1", test_scores[3][2], niter)
+                new_model_score = model_score(validate_scores)
+                if new_model_score > best_model_score:
+                    # test on testset with new best model
+                    best_model_score = new_model_score
+                    best_model = copy.deepcopy(model)
+                    logging.info("test on new best model")
+                    num_instances, test_scores = parse_and_eval(cdtb.test, best_model)
+                    logging.info("test on %d instances" % num_instances)
+                    logging.info(gen_report(*test_scores))
+                    writer.add_scalar("test/span_f1", test_scores[0][2], niter)
+                    writer.add_scalar("test/nuclear_f1", test_scores[1][2], niter)
+                    writer.add_scalar("test/coarse_relation_f1", test_scores[2][2], niter)
+                    writer.add_scalar("test/fine_relation_f1", test_scores[3][2], niter)
+    if best_model:
+        # evaluation and save best model
+        logging.info("final test result")
+        num_instances, test_scores = parse_and_eval(cdtb.test, best_model)
+        logging.info("test on %d instances" % num_instances)
+        logging.info(gen_report(*test_scores))
+        logging.info("save best model to %s" % args.model_save)
+        with open(args.model_save, "wb+") as model_fd:
+            torch.save(best_model, model_fd)
     writer.close()
 
 
@@ -281,8 +303,8 @@ if __name__ == '__main__':
     arg_parser.add_argument("--cache_dir")
 
     # model parameters
-    arg_parser.add_argument("-hidden_size", default=128, type=int)
-    arg_parser.add_argument("-dropout", default=0.1, type=float)
+    arg_parser.add_argument("-hidden_size", default=512, type=int)
+    arg_parser.add_argument("-dropout", default=0.33, type=float)
     w2v_group = arg_parser.add_mutually_exclusive_group(required=True)
     w2v_group.add_argument("-pretrained")
     w2v_group.add_argument("-w2v_size", type=int)
@@ -297,11 +319,13 @@ if __name__ == '__main__':
     arg_parser.add_argument("-epoch", default=20, type=int)
     arg_parser.add_argument("-batch_size", default=64, type=int)
     arg_parser.add_argument("-lr", default=0.001, type=float)
+    arg_parser.add_argument("-l2", default=0.0, type=float)
     arg_parser.add_argument("-log_every", default=10, type=int)
     arg_parser.add_argument("-validate_every", default=10, type=int)
-    arg_parser.add_argument("-a_split_loss", default=0.1, type=float)
+    arg_parser.add_argument("-a_split_loss", default=0.3, type=float)
     arg_parser.add_argument("-a_nuclear_loss", default=1.0, type=float)
     arg_parser.add_argument("-a_relation_loss", default=1.0, type=float)
+    arg_parser.add_argument("-model_save", default="data/models/treebuilder.partptr.model")
     arg_parser.add_argument("--seed", default=21, type=int)
     arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
     arg_parser.set_defaults(use_gpu=False)

@@ -15,7 +15,7 @@ class MaskedGRU(nn.Module):
     def forward(self, padded, lengths, initial_state=None):
         # [batch*edu]
         zero_mask = lengths != 0
-        lengths[lengths == 0] += 1  # in case there is 0 length instance
+        lengths[lengths == 0] += 1  # in case zero length instance
         _, indices = lengths.sort(descending=True)
         _, rev_indices = indices.sort()
 
@@ -23,6 +23,7 @@ class MaskedGRU(nn.Module):
         padded_sorted = padded[indices]
         lengths_sorted = lengths[indices]
         padded_packed = pack_padded_sequence(padded_sorted, lengths_sorted, batch_first=True)
+        self.rnn.flatten_parameters()
         outputs_sorted_packed, hidden_sorted = self.rnn(padded_packed, initial_state)
         # [batch*edu, max_word_seqlen, ]
         outputs_sorted, _ = pad_packed_sequence(outputs_sorted_packed, batch_first=True)
@@ -41,13 +42,18 @@ class BiGRUEDUEncoder(nn.Module):
         super(BiGRUEDUEncoder, self).__init__()
         self.hidden_size = hidden_size
         self.input_size = input_size
-        self.rnn = MaskedGRU(input_size, hidden_size, bidirectional=True)
-        self.output_size = hidden_size * 2
+        self.rnn = MaskedGRU(input_size, hidden_size//2, bidirectional=True)
+        self.token_scorer = nn.Linear(hidden_size, 1)
+        self.output_size = hidden_size
 
     def forward(self, inputs, masks):
         lengths = masks.sum(-1)
         outputs, hidden = self.rnn(inputs, lengths)
-        return hidden
+        token_score = self.token_scorer(outputs).squeeze(-1)
+        token_score[masks == 0] = -1e8
+        token_score = token_score.softmax(dim=-1) * masks.float()
+        weighted_sum = (outputs * token_score.unsqueeze(-1)).sum(-2)
+        return hidden + weighted_sum
 
 
 class Encoder(nn.Module):
@@ -55,20 +61,30 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
-        self.output_size = hidden_size * 2
+        self.output_size = hidden_size
+        self.input_dense = nn.Linear(input_size, hidden_size)
+        self.edu_rnn = MaskedGRU(hidden_size, hidden_size//2, bidirectional=True)
+        self.dropout = nn.Dropout(dropout)
         self.conv = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Conv1d(input_size, hidden_size, kernel_size=2, padding=1, bias=False),
-            nn.ReLU()
+            nn.Conv1d(hidden_size, hidden_size, kernel_size=2, padding=1, bias=False),
+            nn.ReLU(),
+            nn.Dropout(dropout)
         )
-        self.rnn = MaskedGRU(hidden_size, hidden_size, bidirectional=True)
+        self.split_rnn = MaskedGRU(hidden_size, hidden_size//2, bidirectional=True)
 
     def forward(self, inputs, masks):
-        inputs = inputs.transpose(-2, -1)
-        splits = self.conv(inputs).transpose(-2, -1)
-        masks = torch.cat([(masks.sum(-1, keepdim=True) > 0).type(masks.dtype), masks], dim=1)
+        inputs = self.input_dense(inputs)
+        # edu rnn
+        edus, _ = self.edu_rnn(inputs, masks.sum(-1))
+        edus = inputs + self.dropout(edus)
+        # cnn
+        edus = edus.transpose(-2, -1)
+        splits = self.conv(edus).transpose(-2, -1)
+        masks = torch.cat([(masks.sum(-1, keepdim=True) > 0).type_as(masks), masks], dim=1)
         lengths = masks.sum(-1)
-        outputs, hidden = self.rnn(splits, lengths)
+        # split rnn
+        outputs, hidden = self.split_rnn(splits, lengths)
+        outputs = splits + self.dropout(outputs)
         return outputs, masks, hidden
 
 
@@ -90,6 +106,7 @@ class Decoder(nn.Module):
 
     def run_step(self, input, state):
         input = self.input_dense(input)
+        self.rnn.flatten_parameters()
         output, state = self.rnn(input, state)
         return output, state
 
