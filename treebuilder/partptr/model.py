@@ -142,9 +142,9 @@ class BiaffineAttention(nn.Module):
         # [batch, length_encoder, hidden_size]
         d_outputs = self.d_mlp(d_outputs)
 
-        # [batch, num_labels, length_encoder, 1]
+        # [batch, num_labels, 1, length_encoder]
         out_e = (self.W_e @ e_outputs.transpose(1, 2)).unsqueeze(2)
-        # [batch, num_labels, 1, length_decoder]
+        # [batch, num_labels, length_decoder, 1]
         out_d = (self.W_d @ d_outputs.transpose(1, 2)).unsqueeze(3)
 
         # [batch, 1, length_decoder, hidden_size] @ [num_labels, hidden_size, hidden_size]
