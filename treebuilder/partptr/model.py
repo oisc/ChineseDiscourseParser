@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 import torch.nn.functional as F
-import numpy as np
 
 
 class MaskedGRU(nn.Module):
@@ -202,73 +201,6 @@ class PartitionPtr(nn.Module):
 
     def forward(self, session):
         return self.decode(session)
-
-    class Session:
-        def __init__(self, memory, state):
-            self.n = memory.size(1) - 2
-            self.step = 0
-            self.memory = memory
-            self.state = state
-            self.stack = [(0, self.n + 1)]
-            self.scores = np.zeros((self.n, self.n+2), dtype=np.float)
-            self.splits = []
-            self.nuclears = []
-            self.relations = []
-
-        def forward(self, score, state, split, nuclear, relation):
-            left, right = self.stack.pop()
-            if right - split > 1:
-                self.stack.append((split, right))
-            if split - left > 1:
-                self.stack.append((left, split))
-            self.splits.append((left, split, right))
-            self.nuclears.append(nuclear)
-            self.relations.append(relation)
-            self.state = state
-            self.scores[self.step] = score
-            self.step += 1
-            return self
-
-        def terminate(self):
-            return self.step >= self.n
-
-        def __repr__(self):
-            return "[step %d]memory size: %s, state size: %s\n stack:\n%s\n, scores:\n %s" % \
-                   (self.step, str(self.memory.size()), str(self.state.size()),
-                    "\n".join(map(str, self.stack)) or "[]",
-                    str(self.scores))
-
-        def __str__(self):
-            return repr(self)
-
-    def init_session(self, edus):
-        edu_words = [edu.words for edu in edus]
-        edu_poses = [edu.tags for edu in edus]
-        max_word_seqlen = max(len(words) for words in edu_words)
-        edu_seqlen = len(edu_words)
-
-        e_input_words = np.zeros((1, edu_seqlen, max_word_seqlen), dtype=np.long)
-        e_input_poses = np.zeros_like(e_input_words)
-        e_input_masks = np.zeros_like(e_input_words, dtype=np.uint8)
-
-        for i, (words, poses) in enumerate(zip(edu_words, edu_poses)):
-            e_input_words[0, i, :len(words)] = [self.word_vocab[word] for word in words]
-            e_input_poses[0, i, :len(poses)] = [self.pos_vocab[pos] for pos in poses]
-            e_input_masks[0, i, :len(words)] = 1
-
-        e_input_words = torch.from_numpy(e_input_words).long()
-        e_input_poses = torch.from_numpy(e_input_poses).long()
-        e_input_masks = torch.from_numpy(e_input_masks).byte()
-
-        if self.use_gpu:
-            e_input_words = e_input_words.cuda()
-            e_input_poses = e_input_poses.cuda()
-            e_input_masks = e_input_masks.cuda()
-
-        edu_encoded, e_masks = self.encode_edus((e_input_words, e_input_poses, e_input_masks))
-        memory, _, context = self.encoder(edu_encoded, e_masks)
-        state = self.context_dense(context).unsqueeze(0)
-        return PartitionPtr.Session(memory, state)
 
     def decode(self, session):
         left, right = session.stack[-1]

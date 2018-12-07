@@ -13,7 +13,7 @@ from structure.nodes import node_type_filter, EDU, Relation, Sentence, TEXT
 from treebuilder.partptr.model import PartitionPtr
 from treebuilder.partptr.parser import PartitionPtrParser
 import torch.optim as optim
-from util.eval import evaluation_trees
+from util.eval import parse_eval, gen_parse_report
 from tensorboardX import SummaryWriter
 
 
@@ -54,7 +54,7 @@ def gen_decoder_data(root, edu2ids):
     elif isinstance(root, Relation):
         children = [gen_decoder_data(child, edu2ids) for child in root]
         if len(children) < 2:
-            raise ValueError("relation node should at least 2 children")
+            raise ValueError("relation node should have at least 2 children")
 
         while children:
             left_child_edus, left_child_splits = children.pop(0)
@@ -178,19 +178,7 @@ def parse_and_eval(dataset, model):
     for edus in strips:
         parse = parser.parse(edus)
         parses.append(parse)
-    return num_instances, evaluation_trees(parses, golds, treewise_avearge=True)
-
-
-def gen_report(span_score, nuc_score, ctype_score, ftype_score):
-    report = '\n'
-    report += '                 precision    recall    f1\n'
-    report += '---------------------------------------------\n'
-    report += 'span             %5.3f        %5.3f     %5.3f\n' % span_score
-    report += 'nuclear          %5.3f        %5.3f     %5.3f\n' % nuc_score
-    report += 'ctype            %5.3f        %5.3f     %5.3f\n' % ctype_score
-    report += 'ftype            %5.3f        %5.3f     %5.3f\n' % ftype_score
-    report += '\n'
-    return report
+    return num_instances, parse_eval(parses, golds)
 
 
 def model_score(scores):
@@ -231,7 +219,8 @@ def main(args):
     log_rels_loss = 0.
     log_loss = 0.
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
-    writer = SummaryWriter("data/log")
+    writer = SummaryWriter(args.log_dir)
+    logging.info("hint: run 'tensorboard --logdir %s' to observe training status" % args.log_dir)
     best_model = None
     best_model_score = 0.
     for nepoch in range(1, args.epoch + 1):
@@ -263,7 +252,7 @@ def main(args):
             if niter % args.validate_every == 0:
                 num_instances, validate_scores = parse_and_eval(cdtb.validate, model)
                 logging.info("validation on %d instances" % num_instances)
-                logging.info(gen_report(*validate_scores))
+                logging.info(gen_parse_report(*validate_scores))
                 writer.add_scalar("validate/span_f1", validate_scores[0][2], niter)
                 writer.add_scalar("validate/nuclear_f1", validate_scores[1][2], niter)
                 writer.add_scalar("validate/coarse_relation_f1", validate_scores[2][2], niter)
@@ -276,7 +265,7 @@ def main(args):
                     logging.info("test on new best model")
                     num_instances, test_scores = parse_and_eval(cdtb.test, best_model)
                     logging.info("test on %d instances" % num_instances)
-                    logging.info(gen_report(*test_scores))
+                    logging.info(gen_parse_report(*test_scores))
                     writer.add_scalar("test/span_f1", test_scores[0][2], niter)
                     writer.add_scalar("test/nuclear_f1", test_scores[1][2], niter)
                     writer.add_scalar("test/coarse_relation_f1", test_scores[2][2], niter)
@@ -286,7 +275,7 @@ def main(args):
         logging.info("final test result")
         num_instances, test_scores = parse_and_eval(cdtb.test, best_model)
         logging.info("test on %d instances" % num_instances)
-        logging.info(gen_report(*test_scores))
+        logging.info(gen_parse_report(*test_scores))
         logging.info("save best model to %s" % args.model_save)
         with open(args.model_save, "wb+") as model_fd:
             torch.save(best_model, model_fd)
@@ -325,6 +314,7 @@ if __name__ == '__main__':
     arg_parser.add_argument("-a_split_loss", default=0.3, type=float)
     arg_parser.add_argument("-a_nuclear_loss", default=1.0, type=float)
     arg_parser.add_argument("-a_relation_loss", default=1.0, type=float)
+    arg_parser.add_argument("-log_dir", default="data/log")
     arg_parser.add_argument("-model_save", default="data/models/treebuilder.partptr.model")
     arg_parser.add_argument("--seed", default=21, type=int)
     arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
