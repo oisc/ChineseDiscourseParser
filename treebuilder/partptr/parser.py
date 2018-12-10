@@ -14,7 +14,7 @@ class PartitionPtrParser:
         # TODO implement beam search
         session = self.init_session(edus)
         while not session.terminate():
-            split_scores, nucs_score, rels_score, state = self.model(session)
+            split_scores, nucs_score, rels_score, state = self.decode(session)
             split = split_scores.argmax()
             nuclear_id = nucs_score[split].argmax()
             nuclear = self.model.nuc_label.id2label[nuclear_id]
@@ -57,6 +57,10 @@ class PartitionPtrParser:
         memory, _, context = self.model.encoder(edu_encoded, e_masks)
         state = self.model.context_dense(context).unsqueeze(0)
         return Session(memory, state)
+
+    def decode(self, session):
+        left, right = session.stack[-1]
+        return self.model(left, right, session.memory, session.state)
 
     def build_tree(self, edus, splits, nuclears, relations):
         left, split, right = splits.pop(0)

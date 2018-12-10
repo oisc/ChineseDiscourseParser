@@ -199,22 +199,20 @@ class PartitionPtr(nn.Module):
         self.rel_classifier = BiaffineAttention(self.encoder.output_size, self.decoder.output_size, len(self.rel_label),
                                                 rel_mlp_size)
 
-    def forward(self, session):
-        return self.decode(session)
+    def forward(self, left, right, memory, state):
+        return self.decode(left, right, memory, state)
 
-    def decode(self, session):
-        left, right = session.stack[-1]
-        d_input = torch.cat([session.memory[0, left], session.memory[0, right]]).view(1, 1, -1)
-        d_output, state = self.decoder(d_input, session.state)
-
-        masks = torch.zeros(1, 1, session.n+2, dtype=torch.uint8)
+    def decode(self, left, right, memory, state):
+        d_input = torch.cat([memory[0, left], memory[0, right]]).view(1, 1, -1)
+        d_output, state = self.decoder(d_input, state)
+        masks = torch.zeros(1, 1, memory.size(1), dtype=torch.uint8)
         masks[0, 0, left+1:right] = 1
         if self.use_gpu:
             masks = masks.cuda()
-        split_scores = self.split_attention(session.memory, d_output, masks)
+        split_scores = self.split_attention(memory, d_output, masks)
         split_scores = split_scores.softmax(dim=-1)
-        nucs_score = self.nuc_classifier(session.memory, d_output).softmax(dim=-1) * masks.unsqueeze(-1).float()
-        rels_score = self.rel_classifier(session.memory, d_output).softmax(dim=-1) * masks.unsqueeze(-1).float()
+        nucs_score = self.nuc_classifier(memory, d_output).softmax(dim=-1) * masks.unsqueeze(-1).float()
+        rels_score = self.rel_classifier(memory, d_output).softmax(dim=-1) * masks.unsqueeze(-1).float()
         split_scores = split_scores[0, 0].cpu().detach().numpy()
         nucs_score = nucs_score[0, 0].cpu().detach().numpy()
         rels_score = rels_score[0, 0].cpu().detach().numpy()
