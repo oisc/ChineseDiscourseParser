@@ -16,10 +16,10 @@ main_logger = logging.getLogger("dp")
 def build_pipeline():
     logger = logging.getLogger("parsing thread %s" % threading.current_thread().name)
     logger.info("initialize pipeline")
-    with open("data/models/segmenter.svm.model", "rb") as segmenter_fd:
+    with open("pub/models/segmenter.svm.model", "rb") as segmenter_fd:
         segmenter_model = pickle.load(segmenter_fd)
         segmenter = SVMSegmenter(segmenter_model)
-    with open("data/models/treebuilder.partptr.model", "rb") as parser_fd:
+    with open("pub/models/treebuilder.partptr.model", "rb") as parser_fd:
         parser_model = torch.load(parser_fd, map_location="cpu")
         parser_model.use_gpu = False
         parser_model.eval()
@@ -37,7 +37,7 @@ def run(args):
     disc = Discourse()
     pipeline = build_pipeline()
     with open(args.source, "r", encoding=args.encoding) as source_fd:
-        for line in tqdm.tqdm(source_fd, desc="parsing %s:" % args.source, unit=" para"):
+        for line in tqdm.tqdm(source_fd, desc="parsing %s" % args.source, unit=" para"):
             line = line.strip()
             if line:
                 para = pipeline(line)
