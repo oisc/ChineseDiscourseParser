@@ -6,3 +6,4 @@ gensim
 numpy
 tensorboardX
 matplotlib
+sklearn==0.20.0

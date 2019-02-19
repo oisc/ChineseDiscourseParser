@@ -4,6 +4,22 @@ import numpy as np
 from structure.nodes import Paragraph, Relation, rev_relationmap
 import matplotlib
 import matplotlib.pyplot as plt
+from interface import ParserI
+from structure.nodes import EDU, TEXT
+
+
+class PartPtrParser(ParserI):
+    def __init__(self, model):
+        self.parser = PartitionPtrParser(model)
+
+    def parse(self, para):
+        edus = []
+        for edu in para.edus():
+            edu_copy = EDU([TEXT(edu.text)])
+            setattr(edu_copy, "words", edu.words)
+            setattr(edu_copy, "tags", edu.tags)
+            edus.append(edu_copy)
+        return self.parser.parse(edus)
 
 
 class PartitionPtrParser:
