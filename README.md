@@ -2,14 +2,14 @@
 
 A Chinese discourse parser based on CDTB
 
-Requirements:
+##### Requirements:
 - Python == 3.6
 - pytorch >= 0.4
 - sklearn == 0.20
 - executable 'java' in system path
 - ... (see `requirements.txt` for detail)
 
-Run Example:
+##### Run Example:
 
 ```shell
 python3 parse.py sample.txt sample.xml [--draw]
@@ -19,7 +19,7 @@ The script above take 3 parameters `source file`, `path to save parsing xml resu
 and an optional `--draw` which can draw the discourse tree if you are in GUI environment and have tkinter installed.
 Every line in source file should be a paragraph and will be parsing into a CDT-styled discourse tree.
 
-Issues:
+##### Issues:
 
 Module `segmenter.svm` depends on berkeley parser which is employed to generate constituent parsing information.
 However, berkeley parser may behave unstanble when handleing long sentences, resulting a timeout error.
