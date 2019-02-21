@@ -5,6 +5,42 @@ import numpy as np
 from structure.nodes import EDU, Sentence, Relation
 
 
+def edu_eval(segs, golds):
+    num_corr = 0
+    num_gold = 0
+    num_pred = 0
+    for seg, gold in zip(segs, golds):
+        seg_spans = set()
+        gold_spans = set()
+        seg_offset = 0
+        for edu in seg.edus():
+            seg_spans.add((seg_offset, seg_offset+len(edu.text)-1))
+            seg_offset += len(edu.text)
+        gold_offset = 0
+        for edu in gold.edus():
+            gold_spans.add((gold_offset, gold_offset+len(edu.text)-1))
+            gold_offset += len(edu.text)
+        num_corr += len(seg_spans & gold_spans)
+        num_gold += len(gold_spans)
+        num_pred += len(seg_spans)
+    precision = num_corr / num_pred if num_pred > 0 else 0
+    recall = num_corr / num_gold if num_gold > 0 else 0
+    if precision + recall == 0:
+        f1 = 0.
+    else:
+        f1 = 2. * precision * recall / (precision + recall)
+    return num_gold, num_pred, num_corr, precision, recall, f1
+
+
+def gen_edu_report(score):
+    # num_corr, num_gold, num_pred, precision, recall, f1
+    report = '\n'
+    report += 'gold     pred     corr     precision    recall     f1\n'
+    report += '----------------------------------------------------------\n'
+    report += '%-4d     %-4d     %-4d     %-.3f        %-.3f      %-.3f\n' % score
+    return report
+
+
 def rst_parse_eval(parses, golds):
     return parse_eval(parses, golds, average="micro", strict=False, binarize=True)
 

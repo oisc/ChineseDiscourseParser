@@ -40,12 +40,12 @@ class SVMSegmenter(SegmenterI):
         else:
             parse = getattr(sent, "parse")
         parse = ParentedTree.fromstring(parse.pformat())
-        childs = list(parse.subtrees(lambda t: t.height() == 2 and t.label() != '-NONE-'))
+        children = list(parse.subtrees(lambda t: t.height() == 2 and t.label() != '-NONE-'))
         edus = []
         last_edu_words = []
         last_edu_tags = []
         offset = 0
-        for child in childs:
+        for child in children:
             if child[0] == '-LRB-':
                 child[0] = '('
             if child[0] == '-RRB-':
