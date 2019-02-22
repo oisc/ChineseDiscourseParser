@@ -20,7 +20,6 @@ if __name__ == '__main__':
         model.eval()
     segmenter = RNNSegmenter(model)
     cdtb = CDTB("data/CDTB", "TRAIN", "VALIDATE", "TEST", ctb_dir="data/CTB", preprocess=True, cache_dir="data/cache")
-    ctb = cdtb.ctb
 
     golds = []
     segs = []

@@ -9,6 +9,14 @@ A Chinese discourse parser based on CDTB
 - executable 'java' in system path
 - ... (see `requirements.txt` for detail)
 
+##### Install
+
+```shell
+git clone https://github.com/oisc/ChineseDiscourseParser --recursiv
+pip3 install -r requirements.txt 
+```
+See [pyltp](https://github.com/HIT-SCIR/pyltp)'s documentation and download pyltp's models into `pub/pyltp_models`
+
 ##### Run Example:
 
 ```shell

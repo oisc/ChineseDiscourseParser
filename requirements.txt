@@ -7,3 +7,4 @@ numpy
 tensorboardX
 matplotlib
 sklearn==0.20.0
+pyltp==0.2.1
