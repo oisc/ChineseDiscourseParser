@@ -168,7 +168,8 @@ def main(args):
     trainset = numericalize(instances, tags, word_vocab, pos_vocab, gcn_vocab, tag_label)
 
     # build model
-    model = GCNSegmenterModel(hidden_size=args.hidden_size, dropout=args.dropout, rnn_layers=args.rnn_layers,
+    model = GCNSegmenterModel(hidden_size=args.hidden_size, dropout=args.dropout,
+                              rnn_layers=args.rnn_layers, gcn_layers=args.gcn_layers,
                               word_vocab=word_vocab, pos_vocab=pos_vocab, gcn_vocab=gcn_vocab, tag_label=tag_label,
                               pos_size=args.pos_size, pretrained=args.pretrained, w2v_freeze=args.w2v_freeze,
                               use_gpu=args.use_gpu)
@@ -237,6 +238,7 @@ if __name__ == '__main__':
     # model parameter
     arg_parser.add_argument("-hidden_size", default=256, type=int)
     arg_parser.add_argument("-rnn_layers", default=3, type=int)
+    arg_parser.add_argument("-gcn_layers", default=2, type=int)
     arg_parser.add_argument("-dropout", default=0.33, type=float)
     w2v_group = arg_parser.add_mutually_exclusive_group(required=True)
     w2v_group.add_argument("-pretrained")

@@ -33,7 +33,7 @@ class SyntacticGCN(nn.Module):
 
 
 class GCNSegmenterModel(nn.Module):
-    def __init__(self, hidden_size, dropout, rnn_layers, word_vocab, pos_vocab, gcn_vocab, tag_label,
+    def __init__(self, hidden_size, dropout, rnn_layers, gcn_layers, word_vocab, pos_vocab, gcn_vocab, tag_label,
                  pos_size=30, pretrained=None, w2v_size=None, w2v_freeze=False,
                  use_gpu=False):
         super(GCNSegmenterModel, self).__init__()
@@ -48,9 +48,11 @@ class GCNSegmenterModel(nn.Module):
         self.pos_size = pos_size
         self.hidden_size = hidden_size
         self.dropout_p = dropout
+        self.rnn_layers = rnn_layers
         self.rnn = nn.LSTM(self.w2v_size+self.pos_size, self.hidden_size // 2,
                            num_layers=rnn_layers, dropout=dropout, bidirectional=True, batch_first=True)
-        self.gcn = SyntacticGCN(hidden_size, hidden_size, len(gcn_vocab))
+        self.gcn_layers = gcn_layers
+        self.gcns = nn.ModuleList([SyntacticGCN(hidden_size, hidden_size, len(gcn_vocab)) for _ in range(gcn_layers)])
         self.tagger = nn.Linear(hidden_size, len(tag_label))
 
     def forward(self, word_ids, pos_ids, graph, masks=None):
@@ -66,7 +68,9 @@ class GCNSegmenterModel(nn.Module):
             rnn_outputs, _ = pad_packed_sequence(rnn_outputs_packed, batch_first=True)
         else:
             rnn_outputs, _ = self.rnn(rnn_inputs)
-        gcn_outputs = self.gcn(graph, rnn_outputs)
+
+        for gcn in self.gcns:
+            gcn_outputs = gcn(graph, rnn_outputs)
         tag_score = self.tagger(gcn_outputs)
         return tag_score
 
