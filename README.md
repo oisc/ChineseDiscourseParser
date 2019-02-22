@@ -12,9 +12,11 @@ A Chinese discourse parser based on CDTB
 ##### Install
 
 ```shell
-git clone https://github.com/oisc/ChineseDiscourseParser --recursiv
-pip3 install -r requirements.txt 
+git clone https://github.com/oisc/ChineseDiscourseParser --recursive
+cd ChineseDiscourseParser
+pip3 install -r requirements.txt
 ```
+
 See [pyltp](https://github.com/HIT-SCIR/pyltp)'s documentation and download pyltp's models into `pub/pyltp_models`
 
 ##### Run Example:
