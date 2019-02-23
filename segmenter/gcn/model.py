@@ -6,14 +6,17 @@ from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 
 class SyntacticGCN(nn.Module):
-    def __init__(self, input_size, hidden_size, num_labels):
+    def __init__(self, input_size, hidden_size, num_labels, bias=True):
         super(SyntacticGCN, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.num_labels = num_labels
         self.W = nn.Parameter(torch.empty(num_labels, input_size, hidden_size, dtype=torch.float))
         nn.init.xavier_normal_(self.W)
-        nn.init.xavier_normal_(self.W)
+        if bias:
+            self.bias = True
+            self.b = nn.Parameter(torch.empty(num_labels, hidden_size, dtype=torch.float))
+            nn.init.xavier_normal_(self.b)
 
     def forward(self, graph, nodes):
         # graph (b, n, n, l)
@@ -26,6 +29,10 @@ class SyntacticGCN(nn.Module):
         x = g.bmm(nodes).view(b, n, l*input_size)
         # h: (b, n, hidden_size)
         h = x.matmul(self.W.view(l*input_size, hidden_size))
+        if self.bias:
+            bias = (graph.float().view(b*n*n, l) @ self.b).view(b, n, n, hidden_size)
+            bias = bias.sum(2)
+            h = h + bias
         norm = graph.view(b, n, n*l).sum(-1).float().unsqueeze(-1) + 1e-10
         # h: (b, n, hidden_size)
         hidden = F.relu(h / norm)
