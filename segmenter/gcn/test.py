@@ -16,8 +16,8 @@ logger = logging.getLogger("test gcn segmenter")
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     with open("data/models/segmenter.gcn.model", "rb") as model_fd:
-        model = torch.load(model_fd, map_location='cuda')
-        model.use_gpu = True
+        model = torch.load(model_fd, map_location='cpu')
+        model.use_gpu = False
         model.eval()
     segmenter = GCNSegmenter(model)
     cdtb = CDTB("data/CDTB", "TRAIN", "VALIDATE", "TEST", ctb_dir="data/CTB", preprocess=True, cache_dir="data/cache")
