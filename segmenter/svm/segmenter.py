@@ -5,9 +5,6 @@ from nltk import ParentedTree
 from structure.nodes import EDU, TEXT, Sentence, Paragraph
 from util.berkely import BerkeleyParser
 
-LRB = '-LRB-'
-RRB = '-RRB-'
-
 
 class SVMSegmenter(SegmenterI):
     def __init__(self, model):

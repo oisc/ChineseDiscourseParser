@@ -27,6 +27,9 @@ class PartitionPtrParser:
         self.model = model
 
     def parse(self, edus, ret_session=False):
+        if len(edus) < 2:
+            return Paragraph(edus)
+
         # TODO implement beam search
         session = self.init_session(edus)
         while not session.terminate():

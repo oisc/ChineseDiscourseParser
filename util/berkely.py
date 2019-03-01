@@ -29,6 +29,8 @@ class BerkeleyParser(object):
         self.process = self.start()
 
     def parse_thread(self, text, results):
+        text = text.replace("(", '-LRB-')
+        text = text.replace(")", '-RRB-')
         self.process.stdin.write(text + '\n')
         self.process.stdin.flush()
         ret = self.process.stdout.readline().strip()
