@@ -280,7 +280,7 @@ def f1_score(num_corr, num_gold, num_pred, average="micro"):
         precision = np.nan_to_num(num_corr.sum() / num_pred.sum())
         recall = np.nan_to_num(num_corr.sum() / num_gold.sum())
     elif average == "macro":
-        precision = (np.nan_to_num(num_corr / num_pred)).mean()
+        precision = (np.nan_to_num(num_corr / (num_pred + 1e-10))).mean()
         recall = (np.nan_to_num(num_corr / num_gold)).mean()
     else:
         raise ValueError("unsupported average mode '%s'" % average)
