@@ -194,8 +194,9 @@ def relation_eval(parses, golds, strict=True, binarize=True):
             num_crel_gold[quad[2]] += 1
             num_frel_gold[quad[3]] += 1
         for span in corr_spans:
-            if parse_dict[span][1] == gold_dict[span][1]:
+            if parse_dict[span][2] == gold_dict[span][2]:
                 num_crel_corr[parse_dict[span][2]] += 1
+            if parse_dict[span][3] == gold_dict[span][3]:
                 num_frel_corr[parse_dict[span][3]] += 1
 
     crel_scores = []
