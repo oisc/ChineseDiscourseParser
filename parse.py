@@ -10,7 +10,7 @@ import tqdm
 def run(args):
     logger = logging.getLogger("dp")
     doc = Discourse()
-    pipeline = build_pipeline(schema=args.schema, segmenter_name=args.segmenter_name)
+    pipeline = build_pipeline(schema=args.schema, segmenter_name=args.segmenter_name, use_gpu=args.use_gpu)
     with open(args.source, "r", encoding=args.encoding) as source_fd:
         for line in tqdm.tqdm(source_fd, desc="parsing %s" % args.source, unit=" para"):
             line = line.strip()
@@ -32,5 +32,7 @@ if __name__ == '__main__':
     arg_parser.add_argument("-segmenter_name", default="svm")
     arg_parser.add_argument("--encoding", default="utf-8")
     arg_parser.add_argument("--draw", dest="draw", action="store_true")
+    arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
+    arg_parser.set_defaults(use_gpu=False)
     arg_parser.set_defaults(draw=False)
     run(arg_parser.parse_args())

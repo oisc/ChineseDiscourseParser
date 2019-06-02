@@ -13,7 +13,7 @@ logger = logging.getLogger("evaluation")
 
 
 def evaluate(args):
-    pipeline = build_pipeline(schema=args.schema, segmenter_name=args.segmenter_name)
+    pipeline = build_pipeline(schema=args.schema, segmenter_name=args.segmenter_name, use_gpu=args.use_gpu)
     cdtb = CDTB(args.data, "TRAIN", "VALIDATE", "TEST", ctb_dir=args.ctb_dir, preprocess=True, cache_dir=args.cache_dir)
     golds = list(filter(lambda d: d.root_relation(), chain(*cdtb.test)))
     parses = []
@@ -86,4 +86,6 @@ if __name__ == '__main__':
     arg_parser.add_argument("-segmenter_name", default="gcn")
     arg_parser.add_argument("--use_gold_edu", dest="use_gold_edu", action="store_true")
     arg_parser.set_defaults(use_gold_edu=False)
+    arg_parser.add_argument("--use_gpu", dest="use_gpu", action="store_true")
+    arg_parser.set_defaults(use_gpu=False)
     evaluate(arg_parser.parse_args())
