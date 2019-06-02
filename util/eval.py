@@ -1,5 +1,5 @@
 # coding: UTF-8
-from collections import defaultdict
+from collections import defaultdict, Counter
 from itertools import chain
 import numpy as np
 from structure.nodes import EDU, Sentence, Relation
@@ -274,6 +274,91 @@ def factorize_tree(tree, strict=False, binarize=True):
 
     factorize(tree.root_relation())
     return quads
+
+
+def height_eval(parses, golds, strict=True, binarize=True):
+    gold_heights = []
+    corr_heights = []
+
+    for i, (parse, gold) in enumerate(zip(parses, golds)):
+        parse_quads = factorize_tree(parse, strict, binarize)
+        gold_quads = factorize_tree(gold, strict, binarize)
+        parse_dict = {quad[0]: quad for quad in parse_quads}
+        gold_dict = {quad[0]: quad for quad in gold_quads}
+
+        parse_spans = set(parse_dict.keys())
+        gold_spans = set(gold_dict.keys())
+        corr_spans = gold_spans & parse_spans
+
+        span_heights = factorize_span_height(gold, strict=strict, binarize=binarize)
+        for span, height in span_heights.items():
+            gold_heights.append(height)
+            if span in corr_spans:
+                corr_heights.append(height)
+
+    gold_count = Counter(gold_heights)
+    corr_count = Counter(corr_heights)
+    height_scores = []
+    for height in sorted(gold_count.keys()):
+        precision = float(corr_count[height]) / (float(gold_count[height]) + 1e-8)
+        height_scores.append((height, gold_count[height], corr_count[height], precision))
+    return height_scores
+
+
+def gen_height_report(scores):
+    report = '\n'
+    report += 'height    gold       corr    precision\n'
+    report += '------------------------------------------\n'
+    for score in scores:
+        report += '%-4s    %5d      %5d     %5.3f\n' % score
+    return report
+
+
+def factorize_span_height(tree, strict=False, binarize=True):
+    span_height = {}
+
+    def factorize(root, offset=0):
+        if isinstance(root, EDU):
+            return 0, [(offset, offset + len(root.text))]  # height, child_spans
+        elif isinstance(root, Sentence):
+            children_spans = []
+            max_height = 0
+            for child in root:
+                height, spans = factorize(child, offset)
+                children_spans.extend(spans)
+                offset = spans[-1][1]
+                max_height = height if height > max_height else max_height
+            return max_height, children_spans
+        elif isinstance(root, Relation):
+            children_spans = []
+            max_height = 0
+            for child in root:
+                height, spans = factorize(child, offset)
+                children_spans.extend(spans)
+                offset = spans[-1][1]
+                max_height = height if height > max_height else max_height
+            if binarize:
+                while len(children_spans) >= 2:
+                    right = children_spans.pop()
+                    left = children_spans.pop()
+                    if strict:
+                        span = left, right
+                    else:
+                        span = left[0], right[1]
+                    max_height += 1
+                    span_height[span] = max_height
+                    children_spans.append((left[0], right[1]))
+            else:
+                if strict:
+                    span = children_spans
+                else:
+                    span = children_spans[0][0], children_spans[-1][1]
+                max_height += 1
+                span_height[span] = max_height
+            return max_height, [(children_spans[0][0], children_spans[-1][1])]
+
+    factorize(tree.root_relation())
+    return span_height
 
 
 def f1_score(num_corr, num_gold, num_pred, average="micro"):

@@ -74,6 +74,11 @@ def evaluate(args):
     logger.info("fine relation scores:")
     logger.info(eval.gen_category_report(ftype_scores))
 
+    # height eval
+    height_scores = eval.height_eval(parses, golds)
+    logger.info("structure precision by node height:")
+    logger.info(eval.gen_height_report(height_scores))
+
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
