@@ -1,31 +1,19 @@
 # coding: UTF-8
 import logging
 import argparse
-import pickle
 from itertools import chain
-import torch
 from dataset import CDTB
-from segmenter.svm import SVMSegmenter
 from structure import node_type_filter, EDU, Paragraph, TEXT, Sentence
-from treebuilder.partptr import PartPtrParser
+from pipeline import build_pipeline
 from util import eval
 from tqdm import tqdm
-
 from util.eval import edu_eval, gen_edu_report
 
 logger = logging.getLogger("evaluation")
 
 
 def evaluate(args):
-    with open("pub/models/segmenter.svm.model", "rb") as segmenter_fd:
-        segmenter_model = pickle.load(segmenter_fd)
-    with open("pub/models/treebuilder.partptr.model", "rb") as parser_fd:
-        parser_model = torch.load(parser_fd, map_location="cpu")
-        parser_model.use_gpu = False
-        parser_model.eval()
-    segmenter = SVMSegmenter(segmenter_model)
-    parser = PartPtrParser(parser_model)
-
+    pipeline = build_pipeline(schema=args.schema, segmenter_name=args.segmenter_name)
     cdtb = CDTB(args.data, "TRAIN", "VALIDATE", "TEST", ctb_dir=args.ctb_dir, preprocess=True, cache_dir=args.cache_dir)
     golds = list(filter(lambda d: d.root_relation(), chain(*cdtb.test)))
     parses = []
@@ -43,16 +31,26 @@ def evaluate(args):
                 setattr(edu_copy, "words", edu.words)
                 setattr(edu_copy, "tags", edu.tags)
                 edus.append(edu_copy)
-            parse = parser.parse(Paragraph(edus))
-            parses.append(parse)
         else:
-            edus = []
+            sentences = []
             for sentence in para.sentences():
                 if list(sentence.iterfind(node_type_filter(EDU))):
-                    setattr(sentence, "parse", cdtb.ctb[sentence.sid])
-                    edus.extend(segmenter.cut_edu(sentence))
-            parse = parser.parse(Paragraph(edus))
-            parses.append(parse)
+                    copy_sentence = Sentence([TEXT([sentence.text])])
+                    if hasattr(sentence, "words"):
+                        setattr(copy_sentence, "words", sentence.words)
+                    if hasattr(sentence, "tags"):
+                        setattr(copy_sentence, "tags", sentence.tags)
+                    setattr(copy_sentence, "parse", cdtb.ctb[sentence.sid])
+                    sentences.append(copy_sentence)
+            para = pipeline.cut_edu(Paragraph(sentences))
+            edus = []
+            for edu in para.edus():
+                edu_copy = EDU([TEXT(edu.text)])
+                setattr(edu_copy, "words", edu.words)
+                setattr(edu_copy, "tags", edu.tags)
+                edus.append(edu_copy)
+        parse = pipeline.parse(Paragraph(edus))
+        parses.append(parse)
 
     # edu score
     scores = edu_eval(golds, parses)
@@ -84,6 +82,8 @@ if __name__ == '__main__':
     arg_parser.add_argument("data")
     arg_parser.add_argument("--ctb_dir")
     arg_parser.add_argument("--cache_dir")
+    arg_parser.add_argument("-schema", default="topdown")
+    arg_parser.add_argument("-segmenter_name", default="gcn")
     arg_parser.add_argument("--use_gold_edu", dest="use_gold_edu", action="store_true")
     arg_parser.set_defaults(use_gold_edu=False)
     evaluate(arg_parser.parse_args())

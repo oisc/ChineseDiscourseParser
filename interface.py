@@ -23,3 +23,24 @@ class ParserI:
     @abstractmethod
     def parse(self, para: Paragraph) -> Paragraph:
         raise NotImplemented()
+
+
+class PipelineI:
+    @abstractmethod
+    def cut_sent(self, text: str) -> Paragraph:
+        raise NotImplemented()
+
+    @abstractmethod
+    def cut_edu(self, para: Paragraph) -> Paragraph:
+        raise NotImplemented()
+
+    @abstractmethod
+    def parse(self, para: Paragraph) -> Paragraph:
+        raise NotImplemented()
+
+    @abstractmethod
+    def full_parse(self, text: str):
+        raise NotImplemented()
+
+    def __call__(self, text: str):
+        return self.full_parse(text)
