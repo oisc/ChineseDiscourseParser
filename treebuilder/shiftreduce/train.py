@@ -220,7 +220,7 @@ if __name__ == '__main__':
     arg_parser.add_argument("--epoch", default=20, type=int)
     arg_parser.add_argument("--batch_size", default=32)
     arg_parser.add_argument("-lr", default=0.001, type=float)
-    arg_parser.add_argument("-l2", default=0.0, type=float)
+    arg_parser.add_argument("-l2", default=0.00001, type=float)
     arg_parser.add_argument("-log_every", default=3, type=int)
     arg_parser.add_argument("-validate_every", default=10, type=int)
     arg_parser.add_argument("-model_save", default="data/models/treebuilder.shiftreduce.model")

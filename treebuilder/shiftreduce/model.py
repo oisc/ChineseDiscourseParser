@@ -72,11 +72,16 @@ class ShiftReduceModel(nn.Module):
         self.use_gpu = use_gpu
 
         # components
-        self.edu_proj = nn.Linear(self.w2v_size * 2 + self.pos_size, self.hidden_size * 2)
+        cnn_input_width = self.w2v_size + self.pos_size
+        unigram_filter_num, bigram_filter_num, trigram_filter_num = cnn_filters
+        self.edu_unigram_cnn = nn.Conv2d(1, unigram_filter_num, (1, cnn_input_width), padding=(0, 0))
+        self.edu_bigram_cnn = nn.Conv2d(1, bigram_filter_num, (2, cnn_input_width), padding=(1, 0))
+        self.edu_trigram_cnn = nn.Conv2d(1, trigram_filter_num, (3, cnn_input_width), padding=(2, 0))
+
+        self.edu_proj = nn.Linear(self.w2v_size * 2 + self.pos_size + sum(cnn_filters), self.hidden_size * 2)
         self.tracker = nn.LSTMCell(hidden_size * 3, hidden_size)
         self.reducer = Reducer(hidden_size)
         self.scorer = MLP(hidden_size, mlp_layers, dropout, len(trans_label))
-        # TODO edu cnn filters
 
     def forward(self, state):
         return self.scorer(state.tracking[0].view(-1))
@@ -147,9 +152,20 @@ class ShiftReduceModel(nn.Module):
                 pos_ids = pos_ids.cuda()
             word_embs = self.word_emb(word_ids)
             pos_embs = self.pos_emb(pos_ids)
-
+            # basic
             w1, w_1 = word_embs[0], word_embs[-1]
             p1 = pos_embs[0]
-            h, c = self.edu_proj(torch.cat([w1, w_1, p1], dim=0)).chunk(2)
+            # cnn
+            cnn_input = torch.cat([word_embs, pos_embs], dim=1)
+            cnn_input = cnn_input.view(1, 1, cnn_input.size(0), cnn_input.size(1))
+            unigram_output = F.relu(self.edu_unigram_cnn(cnn_input)).squeeze(-1)
+            unigram_feats = F.max_pool1d(unigram_output, kernel_size=unigram_output.size(2)).view(-1)
+            bigram_output = F.relu(self.edu_bigram_cnn(cnn_input)).squeeze(-1)
+            bigram_feats = F.max_pool1d(bigram_output, kernel_size=bigram_output.size(2)).view(-1)
+            trigram_output = F.relu(self.edu_trigram_cnn(cnn_input)).squeeze(-1)
+            trigram_feats = F.max_pool1d(trigram_output, kernel_size=trigram_output.size(2)).view(-1)
+            cnn_feats = torch.cat([unigram_feats, bigram_feats, trigram_feats], dim=0)
+            # proj
+            h, c = self.edu_proj(torch.cat([w1, w_1, p1, cnn_feats], dim=0)).chunk(2)
             encoded.append((h, c))
         return encoded
